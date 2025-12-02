@@ -12,7 +12,7 @@ import asyncssh
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QMessageBox, QStatusBar, QSplitter, QListWidget, QListWidgetItem,
-    QMenu, QFrame, QToolBar, QSizePolicy
+    QMenu, QFrame, QToolBar, QSizePolicy, QLineEdit
 )
 from PySide6.QtCore import Qt, Slot, Signal, QTimer, QPropertyAnimation, QEasingCurve, Property, QSize, QMetaObject, Q_ARG
 from PySide6.QtGui import QCloseEvent, QAction
@@ -190,6 +190,13 @@ class MainWindow(QMainWindow):
         title = QLabel("Hosts")
         title.setStyleSheet("font-size: 14px; font-weight: bold; padding: 4px;")
         layout.addWidget(title)
+
+        # Search field
+        self._hosts_search = QLineEdit()
+        self._hosts_search.setPlaceholderText("Pesquisar...")
+        self._hosts_search.setClearButtonEnabled(True)
+        self._hosts_search.textChanged.connect(self._on_hosts_search_changed)
+        layout.addWidget(self._hosts_search)
 
         # Hosts list
         self._hosts_list = QListWidget()
@@ -440,7 +447,17 @@ class MainWindow(QMainWindow):
         self._hosts_list.clear()
         hosts = self._hosts_manager.get_all()
 
+        # Get search filter text
+        search_text = self._hosts_search.text().strip().lower() if hasattr(self, '_hosts_search') else ""
+
         for host in hosts:
+            # Apply filter if search text is present
+            if search_text:
+                # Search in all relevant fields
+                searchable = f"{host.name} {host.host} {host.port} {host.username} {host.device_type or ''} {host.terminal_type}".lower()
+                if search_text not in searchable:
+                    continue
+
             item = QListWidgetItem()
             display_text = f"{host.name}\n{host.host}:{host.port}"
             item.setText(display_text)
@@ -452,6 +469,11 @@ class MainWindow(QMainWindow):
                 item.setToolTip(f"{host.username}@{host.host}:{host.port}\nSem senha salva")
 
             self._hosts_list.addItem(item)
+
+    @Slot(str)
+    def _on_hosts_search_changed(self, text: str) -> None:
+        """Handle search text change - filter hosts list."""
+        self._refresh_hosts_list()
 
     @Slot()
     def _on_toggle_hosts(self) -> None:
