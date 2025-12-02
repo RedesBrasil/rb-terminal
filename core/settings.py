@@ -18,7 +18,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_SETTINGS = {
     "openrouter_api_key": "",
     "default_model": "google/gemini-2.5-flash",
-    "theme": "dark"
+    "theme": "dark",
+    "max_agent_iterations": 10,
 }
 
 
@@ -38,6 +39,7 @@ class Settings:
     openrouter_api_key: str = ""
     default_model: str = "google/gemini-2.5-flash"
     theme: str = "dark"
+    max_agent_iterations: int = 10
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
@@ -49,7 +51,8 @@ class Settings:
         return cls(
             openrouter_api_key=data.get("openrouter_api_key", ""),
             default_model=data.get("default_model", "google/gemini-2.5-flash"),
-            theme=data.get("theme", "dark")
+            theme=data.get("theme", "dark"),
+            max_agent_iterations=int(data.get("max_agent_iterations", 10) or 10),
         )
 
 
@@ -151,6 +154,20 @@ class SettingsManager:
     def set_model(self, model: str) -> None:
         """Set default model."""
         self.settings.default_model = model
+
+    def get_max_iterations(self) -> int:
+        """Get max AI iterations."""
+        value = getattr(self.settings, "max_agent_iterations", DEFAULT_SETTINGS["max_agent_iterations"])
+        try:
+            value_int = int(value)
+        except (TypeError, ValueError):
+            value_int = DEFAULT_SETTINGS["max_agent_iterations"]
+        return max(1, value_int)
+
+    def set_max_iterations(self, iterations: int) -> None:
+        """Set max AI iterations (clamped to sensible bounds)."""
+        safe_value = max(1, min(100, int(iterations)))
+        self.settings.max_agent_iterations = safe_value
 
     def reload(self) -> None:
         """Reload settings from file."""

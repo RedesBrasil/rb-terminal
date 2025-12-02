@@ -669,8 +669,14 @@ class MainWindow(QMainWindow):
             raise RuntimeError("Not connected")
 
         def on_command_executed(cmd: str, output: str) -> None:
-            self._terminal.append_output(f"\n$ {cmd}\n")
-            self._terminal.append_output(output)
+            def _normalize_for_terminal(text: str) -> str:
+                # Convert lone LF or CR into CRLF so the terminal cursor resets to column 0.
+                text = text.replace("\r\n", "\n").replace("\r", "\n")
+                return text.replace("\n", "\r\n")
+
+            # Ensure injected command lines respect carriage return to avoid offsetting columns
+            self._terminal.append_output(f"\r\n$ {cmd}\r\n")
+            self._terminal.append_output(_normalize_for_terminal(output))
 
         def on_thinking(status: str) -> None:
             self._chat.set_status(status)

@@ -52,6 +52,8 @@ Você tem acesso à ferramenta execute_command para rodar comandos no terminal S
         "cisco": "\n\nVocê está conectado a um dispositivo Cisco IOS. Use comandos Cisco CLI (show, configure terminal, etc.).",
     }
 
+    DEFAULT_MAX_ITERATIONS = 10
+
     TOOLS = [
         {
             "type": "function",
@@ -225,6 +227,13 @@ Você tem acesso à ferramenta execute_command para rodar comandos no terminal S
 
         return f"Error: Unknown tool: {name}"
 
+    def _get_max_iterations(self) -> int:
+        """Return user-configured iteration limit."""
+        try:
+            return self._settings_manager.get_max_iterations()
+        except Exception:
+            return self.DEFAULT_MAX_ITERATIONS
+
     async def chat(self, user_message: str) -> str:
         """
         Send a message to the agent and get a response.
@@ -254,7 +263,7 @@ Você tem acesso à ferramenta execute_command para rodar comandos no terminal S
             "content": user_message
         })
 
-        max_iterations = 10  # Prevent infinite loops
+        max_iterations = self._get_max_iterations()
         iteration = 0
 
         while iteration < max_iterations:

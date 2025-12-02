@@ -12,7 +12,7 @@ import httpx
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QGroupBox, QFormLayout, QMessageBox, QListWidget,
-    QListWidgetItem, QApplication
+    QListWidgetItem, QApplication, QSpinBox
 )
 from PySide6.QtCore import Qt, QThread, Signal, QEvent
 
@@ -116,6 +116,13 @@ class SettingsDialog(QDialog):
         self._status_label.hide()
         api_layout.addRow("", self._status_label)
 
+        # Max iterations
+        self._iteration_spin = QSpinBox()
+        self._iteration_spin.setRange(1, 100)
+        self._iteration_spin.setValue(10)
+        self._iteration_spin.setToolTip("Limite de iteracoes que a IA pode executar por tarefa")
+        api_layout.addRow("Iteracoes IA:", self._iteration_spin)
+
         # Link to OpenRouter
         link_label = QLabel('<a href="https://openrouter.ai/keys">Obter API Key no OpenRouter</a>')
         link_label.setOpenExternalLinks(True)
@@ -166,7 +173,7 @@ class SettingsDialog(QDialog):
             QLabel {
                 color: #dcdcdc;
             }
-            QLineEdit {
+            QLineEdit, QSpinBox {
                 background-color: #3c3c3c;
                 border: 1px solid #555555;
                 border-radius: 3px;
@@ -174,7 +181,7 @@ class SettingsDialog(QDialog):
                 color: #dcdcdc;
                 min-height: 20px;
             }
-            QLineEdit:focus {
+            QLineEdit:focus, QSpinBox:focus {
                 border: 1px solid #007acc;
             }
             QListWidget {
@@ -322,6 +329,13 @@ class SettingsDialog(QDialog):
         self._model_search.setText(current_model)
         self._model_search.setProperty("model_id", current_model)
 
+        # Iterations
+        try:
+            iter_value = int(getattr(settings, "max_agent_iterations", 10))
+        except (TypeError, ValueError):
+            iter_value = 10
+        self._iteration_spin.setValue(max(1, min(100, iter_value)))
+
     def _toggle_api_key_visibility(self) -> None:
         """Toggle API key visibility."""
         if self._api_key_edit.echoMode() == QLineEdit.EchoMode.Password:
@@ -369,6 +383,7 @@ class SettingsDialog(QDialog):
         # Update settings
         self._settings_manager.set_api_key(api_key)
         self._settings_manager.set_model(model)
+        self._settings_manager.set_max_iterations(self._iteration_spin.value())
 
         # Save to file
         if self._settings_manager.save():
