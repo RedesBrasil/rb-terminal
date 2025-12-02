@@ -685,6 +685,10 @@ class MainWindow(QMainWindow):
         self._agent = None
         self._ssh_session = None
 
+        # Clear any pending output buffer to prevent overwriting the message
+        self._output_timer.stop()
+        self._output_buffer.clear()
+
         # Show disconnected message in terminal
         self._terminal.show_disconnected_message()
         self._update_ui_state()
@@ -727,6 +731,9 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def _on_ssh_output_slot(self, data: str) -> None:
         """Buffer SSH output and process in batches."""
+        # Ignore output if terminal is in disconnected mode
+        if self._terminal._disconnected_mode:
+            return
         self._output_buffer.append(data)
         # Start timer if not already running (10ms batching window)
         if not self._output_timer.isActive():
@@ -735,6 +742,10 @@ class MainWindow(QMainWindow):
     def _flush_output_buffer(self) -> None:
         """Flush buffered output to terminal."""
         if not self._output_buffer:
+            return
+        # Don't flush if terminal is in disconnected mode
+        if self._terminal._disconnected_mode:
+            self._output_buffer.clear()
             return
         # Combine all buffered data
         combined = ''.join(self._output_buffer)

@@ -163,10 +163,11 @@ Janela principal com:
 - `R` - Reconectar (quando desconectado)
 
 **Reconexao automatica:**
-- Quando conexao e perdida inesperadamente, terminal mostra "Pressione R para reconectar"
+- Quando conexao e perdida (exit, timeout, etc), pressionar `R` reconecta ao mesmo host
 - Ultima config de conexao e salva em `_last_config`
 - Signal `_unexpected_disconnect` notifica desconexao via Qt signal (thread-safe)
 - Desconexao manual (botao) limpa `_last_config`, nao permite reconectar com R
+- **TODO:** Mostrar mensagem visual no terminal informando sobre o R (tentativa atual nao funcionou devido a timing de eventos Qt)
 
 ### gui/terminal_widget.py
 
