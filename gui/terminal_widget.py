@@ -126,6 +126,10 @@ class TerminalWidget(QWidget):
 
     input_entered = Signal(str)
     reconnect_requested = Signal()
+    # Signal emitted when pre-login credentials are entered (username, password)
+    prelogin_credentials = Signal(str, str)
+    # Signal emitted when pre-login is cancelled (Ctrl+C or Escape)
+    prelogin_cancelled = Signal()
 
     DEFAULT_FG = QColor(220, 220, 220)
     DEFAULT_BG = QColor(30, 30, 30)
@@ -160,6 +164,13 @@ class TerminalWidget(QWidget):
 
         # Disconnected mode
         self._disconnected_mode = False
+
+        # Pre-login mode (local username/password prompt like PuTTY)
+        self._prelogin_mode = False
+        self._prelogin_stage = ""  # "username" or "password"
+        self._prelogin_buffer = ""
+        self._prelogin_username = ""
+        self._prelogin_need_password = True
 
         # Setup
         self._setup_ui()
@@ -339,6 +350,11 @@ class TerminalWidget(QWidget):
         key = event.key()
         modifiers = event.modifiers()
 
+        # Handle pre-login mode (local username/password prompt)
+        if self._prelogin_mode:
+            self._handle_prelogin_key(event)
+            return
+
         # Handle disconnected mode - only respond to R key
         if self._disconnected_mode:
             if key == Qt.Key.Key_R and modifiers == Qt.KeyboardModifier.NoModifier:
@@ -470,6 +486,10 @@ class TerminalWidget(QWidget):
         """Clear terminal content."""
         self._screen.reset()
         self._disconnected_mode = False
+        self._prelogin_mode = False
+        self._prelogin_stage = ""
+        self._prelogin_buffer = ""
+        self._prelogin_username = ""
         self._schedule_update()
 
     def show_disconnected_message(self) -> None:
@@ -497,6 +517,134 @@ class TerminalWidget(QWidget):
 
         self._schedule_update()
         self.setFocus()
+
+    def start_prelogin(self, need_username: bool = True, need_password: bool = True) -> None:
+        """
+        Start pre-login mode to collect credentials locally (like PuTTY).
+
+        Args:
+            need_username: Whether to prompt for username
+            need_password: Whether to prompt for password after username
+        """
+        self._screen.reset()
+        self._prelogin_mode = True
+        self._prelogin_buffer = ""
+        self._prelogin_username = ""
+        self._prelogin_need_password = need_password
+        self._disconnected_mode = False
+
+        if need_username:
+            self._prelogin_stage = "username"
+            self._stream.feed("login as: ")
+        elif need_password:
+            self._prelogin_stage = "password"
+            self._stream.feed("Password: ")
+        else:
+            # Nothing to collect
+            self._prelogin_mode = False
+            self.prelogin_credentials.emit("", "")
+            return
+
+        self._schedule_update()
+        self.setFocus()
+
+    def cancel_prelogin(self) -> None:
+        """Cancel pre-login mode."""
+        self._prelogin_mode = False
+        self._prelogin_stage = ""
+        self._prelogin_buffer = ""
+        self._prelogin_username = ""
+
+    def _show_cancelled_message(self) -> None:
+        """Show cancelled message with reconnect option."""
+        self._screen.reset()
+        self._disconnected_mode = True
+
+        msg_line1 = "Conexao cancelada"
+        msg_line2 = "Pressione R para tentar novamente"
+
+        center_row = max(1, self._rows // 2)
+        center_col1 = max(1, (self._cols - len(msg_line1)) // 2 + 1)
+        center_col2 = max(1, (self._cols - len(msg_line2)) // 2 + 1)
+
+        self._stream.feed("\x1b[2J")  # Clear screen
+        self._stream.feed(f"\x1b[{center_row};{center_col1}H{msg_line1}")
+        self._stream.feed(f"\x1b[{center_row + 2};{center_col2}H{msg_line2}")
+        self._stream.feed(f"\x1b[{self._rows};1H")
+
+        self._schedule_update()
+        self.setFocus()
+
+    def _handle_prelogin_key(self, event: "QKeyEvent") -> bool:
+        """
+        Handle key press in pre-login mode.
+        Returns True if key was consumed.
+        """
+        if not self._prelogin_mode:
+            return False
+
+        key = event.key()
+        text = event.text()
+        modifiers = event.modifiers()
+
+        # Enter - submit current field
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if self._prelogin_stage == "username":
+                self._prelogin_username = self._prelogin_buffer
+                self._prelogin_buffer = ""
+                self._stream.feed("\r\n")
+
+                if self._prelogin_need_password:
+                    self._prelogin_stage = "password"
+                    self._stream.feed("Password: ")
+                else:
+                    # Done - emit credentials
+                    self._prelogin_mode = False
+                    self.prelogin_credentials.emit(self._prelogin_username, "")
+            elif self._prelogin_stage == "password":
+                password = self._prelogin_buffer
+                self._prelogin_buffer = ""
+                self._stream.feed("\r\n")
+                self._prelogin_mode = False
+                self.prelogin_credentials.emit(self._prelogin_username, password)
+
+            self._schedule_update()
+            return True
+
+        # Backspace
+        if key == Qt.Key.Key_Backspace:
+            if self._prelogin_buffer:
+                self._prelogin_buffer = self._prelogin_buffer[:-1]
+                # Echo backspace only for username (not password)
+                if self._prelogin_stage == "username":
+                    self._stream.feed("\b \b")
+                self._schedule_update()
+            return True
+
+        # Escape or Ctrl+C - cancel and show reconnect option
+        is_ctrl_c = key == Qt.Key.Key_C and (modifiers & Qt.KeyboardModifier.ControlModifier)
+        if key == Qt.Key.Key_Escape or is_ctrl_c:
+            self._stream.feed("\r\n^C\r\n")
+            self.cancel_prelogin()
+            self._show_cancelled_message()
+            self.prelogin_cancelled.emit()
+            return True
+
+        # Regular character
+        if text and len(text) == 1 and text.isprintable():
+            self._prelogin_buffer += text
+            # Echo character only for username (not password)
+            if self._prelogin_stage == "username":
+                self._stream.feed(text)
+            self._schedule_update()
+            return True
+
+        return True  # Consume all other keys in prelogin mode
+
+    @property
+    def is_prelogin_mode(self) -> bool:
+        """Check if terminal is in pre-login mode."""
+        return self._prelogin_mode
 
     def get_terminal_size(self) -> tuple[int, int]:
         """Get terminal size in characters."""

@@ -167,27 +167,23 @@ class SSHSession:
         self._manual_disconnect = False
 
         try:
+            # Username is required - should be collected before calling connect()
+            if not self.config.username:
+                raise ValueError("Username is required for SSH connection")
+
             # Build connection options
             connect_options = {
                 "host": self.config.host,
                 "port": self.config.port,
+                "username": self.config.username,
                 "known_hosts": None,  # Skip host key verification for simplicity
             }
 
-            # Add username if provided
-            if self.config.username:
-                connect_options["username"] = self.config.username
-
-            # Add password if provided, otherwise use keyboard-interactive
+            # Add password if provided, otherwise use keyboard-interactive for password
             if self.config.password:
                 connect_options["password"] = self.config.password
-            elif self.config.username:
-                # Has username but no password - try keyboard-interactive
-                connect_options["kbdint_auth"] = self._keyboard_interactive_auth
-
-            # If no username at all, use keyboard-interactive for everything
-            if not self.config.username:
-                connect_options["username"] = ""
+            else:
+                # No password saved - use keyboard-interactive to prompt for password
                 connect_options["kbdint_auth"] = self._keyboard_interactive_auth
 
             self._conn = await asyncssh.connect(**connect_options)

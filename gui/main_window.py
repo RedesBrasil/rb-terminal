@@ -7,6 +7,8 @@ import asyncio
 import logging
 from typing import Optional
 
+import asyncssh
+
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QMessageBox, QStatusBar, QSplitter, QListWidget, QListWidgetItem,
@@ -100,6 +102,9 @@ class MainWindow(QMainWindow):
         self._chat_visible: bool = False  # Chat starts hidden
         self._last_config: Optional[SSHConfig] = None  # For reconnection
 
+        # Pending connection data (used during pre-login)
+        self._pending_connection: Optional[dict] = None
+
         # Output buffer for batching SSH output
         self._output_buffer: list[str] = []
         self._output_timer = QTimer()
@@ -113,6 +118,9 @@ class MainWindow(QMainWindow):
         self._setup_connections()
         self._update_ui_state()
         self._refresh_hosts_list()
+
+        # Start maximized
+        self.showMaximized()
 
     def _setup_ui(self) -> None:
         """Setup the main window UI."""
@@ -386,6 +394,8 @@ class MainWindow(QMainWindow):
         """Connect signals to slots."""
         self._terminal.input_entered.connect(self._on_terminal_input)
         self._terminal.reconnect_requested.connect(self._on_reconnect_requested)
+        self._terminal.prelogin_credentials.connect(self._on_prelogin_credentials)
+        self._terminal.prelogin_cancelled.connect(self._on_prelogin_cancelled)
 
         # SSH output signal - use AutoConnection since qasync integrates both loops
         self._ssh_output_received.connect(self._on_ssh_output_slot, Qt.ConnectionType.AutoConnection)
@@ -557,11 +567,28 @@ class MainWindow(QMainWindow):
 
         # Get saved password if available (may be None)
         password = self._hosts_manager.get_password(host_id)
-        # Password can be None - will be requested via terminal if needed
 
         self._current_host_id = host_id
         self._current_device_type = host.device_type
         cols, rows = self._terminal.get_terminal_size()
+
+        # Check if we need to ask for credentials locally (like PuTTY)
+        need_username = not host.username
+        need_password = not password and host.username  # Only if has username but no password
+
+        if need_username:
+            # Store pending connection data and start pre-login mode
+            self._pending_connection = {
+                "host": host.host,
+                "port": host.port,
+                "terminal_type": host.terminal_type,
+                "term_width": cols,
+                "term_height": rows,
+            }
+            self._terminal.start_prelogin(need_username=True, need_password=True)
+            return
+
+        # Has username - connect directly (password will be asked via keyboard-interactive if needed)
         config = SSHConfig(
             host=host.host,
             port=host.port,
@@ -647,7 +674,10 @@ class MainWindow(QMainWindow):
                 self._on_disconnect_callback
             )
             await self._ssh_session.connect()
-            self._last_config = config  # Save for reconnection
+
+            # Success - clear pending connection and save for reconnection
+            self._pending_connection = None
+            self._last_config = config
             self._terminal.clear()
             self._terminal.set_focus()
 
@@ -659,9 +689,31 @@ class MainWindow(QMainWindow):
             self._chat.clear_messages()
             self._update_ui_state()
 
+        except asyncssh.PermissionDenied:
+            # Authentication failed - ask for password again
+            logger.warning(f"Authentication failed for {config.username}@{config.host}")
+            self._ssh_session = None
+
+            # Store connection data for retry (keep username)
+            cols, rows = self._terminal.get_terminal_size()
+            self._pending_connection = {
+                "host": config.host,
+                "port": config.port,
+                "username": config.username,  # Keep the username
+                "terminal_type": config.terminal_type,
+                "term_width": cols,
+                "term_height": rows,
+            }
+
+            # Show error and prompt for password again
+            self._terminal.append_output("Access denied\r\n")
+            self._terminal.start_prelogin(need_username=False, need_password=True)
+            self._update_ui_state()
+
         except Exception as e:
             logger.error(f"Connection failed: {e}")
             self._ssh_session = None
+            self._pending_connection = None
             QMessageBox.critical(
                 self,
                 "Erro de Conexao",
@@ -696,12 +748,60 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_reconnect_requested(self) -> None:
         """Handle reconnect request from terminal (user pressed R)."""
+        # Check if we have pending connection (from cancelled pre-login or auth failure)
+        if self._pending_connection:
+            cols, rows = self._terminal.get_terminal_size()
+            self._pending_connection["term_width"] = cols
+            self._pending_connection["term_height"] = rows
+
+            # Check if we already have username (retry password scenario)
+            has_username = bool(self._pending_connection.get("username"))
+            self._terminal.start_prelogin(need_username=not has_username, need_password=True)
+            return
+
+        # Otherwise try to reconnect with last successful config
         if self._last_config:
-            # Update terminal size before reconnecting
             cols, rows = self._terminal.get_terminal_size()
             self._last_config.term_width = cols
             self._last_config.term_height = rows
             asyncio.ensure_future(self._connect_async(self._last_config))
+
+    @Slot(str, str)
+    def _on_prelogin_credentials(self, username: str, password: str) -> None:
+        """Handle credentials received from terminal pre-login mode."""
+        if not self._pending_connection:
+            return
+
+        # Use username from pending_connection if available (retry scenario)
+        # Otherwise use the username just entered
+        final_username = self._pending_connection.get("username") or username
+
+        if not final_username:
+            # User cancelled or empty username
+            self._pending_connection = None
+            self._terminal.clear()
+            return
+
+        # Build config with collected credentials
+        config = SSHConfig(
+            host=self._pending_connection["host"],
+            port=self._pending_connection["port"],
+            username=final_username,
+            password=password,
+            terminal_type=self._pending_connection["terminal_type"],
+            term_width=self._pending_connection["term_width"],
+            term_height=self._pending_connection["term_height"],
+        )
+
+        # Keep pending_connection for retry on auth failure
+        asyncio.ensure_future(self._connect_async(config))
+
+    @Slot()
+    def _on_prelogin_cancelled(self) -> None:
+        """Handle pre-login cancellation (Ctrl+C or Escape)."""
+        # Keep pending_connection so R can retry
+        # Terminal is now in disconnected mode showing "Press R to retry"
+        pass
 
     async def _disconnect_async(self) -> None:
         """Async disconnection handler."""
