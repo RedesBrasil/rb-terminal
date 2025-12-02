@@ -12,7 +12,7 @@ import httpx
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QGroupBox, QFormLayout, QMessageBox, QListWidget,
-    QListWidgetItem, QApplication, QSpinBox
+    QListWidgetItem, QApplication, QSpinBox, QComboBox
 )
 from PySide6.QtCore import Qt, QThread, Signal, QEvent
 
@@ -122,6 +122,14 @@ class SettingsDialog(QDialog):
         self._iteration_spin.setValue(10)
         self._iteration_spin.setToolTip("Limite de iteracoes que a IA pode executar por tarefa")
         api_layout.addRow("Iteracoes IA:", self._iteration_spin)
+
+        # Chat position
+        self._chat_position_combo = QComboBox()
+        self._chat_position_combo.addItem("Abaixo do terminal", "bottom")
+        self._chat_position_combo.addItem("A direita do terminal", "right")
+        self._chat_position_combo.addItem("A esquerda do terminal", "left")
+        self._chat_position_combo.setToolTip("Posicao do painel de chat em relacao ao terminal")
+        api_layout.addRow("Posicao do Chat:", self._chat_position_combo)
 
         # Link to OpenRouter
         link_label = QLabel('<a href="https://openrouter.ai/keys">Obter API Key no OpenRouter</a>')
@@ -336,6 +344,14 @@ class SettingsDialog(QDialog):
             iter_value = 10
         self._iteration_spin.setValue(max(1, min(100, iter_value)))
 
+        # Chat position
+        chat_position = getattr(settings, "chat_position", "bottom")
+        index = self._chat_position_combo.findData(chat_position)
+        if index != -1:
+            self._chat_position_combo.setCurrentIndex(index)
+        else:
+            self._chat_position_combo.setCurrentIndex(0)
+
     def _toggle_api_key_visibility(self) -> None:
         """Toggle API key visibility."""
         if self._api_key_edit.echoMode() == QLineEdit.EchoMode.Password:
@@ -384,6 +400,9 @@ class SettingsDialog(QDialog):
         self._settings_manager.set_api_key(api_key)
         self._settings_manager.set_model(model)
         self._settings_manager.set_max_iterations(self._iteration_spin.value())
+        chat_position = self._chat_position_combo.currentData()
+        if chat_position:
+            self._settings_manager.set_chat_position(chat_position)
 
         # Save to file
         if self._settings_manager.save():

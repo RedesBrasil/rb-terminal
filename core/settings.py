@@ -20,6 +20,7 @@ DEFAULT_SETTINGS = {
     "default_model": "google/gemini-2.5-flash",
     "theme": "dark",
     "max_agent_iterations": 10,
+    "chat_position": "bottom",
 }
 
 
@@ -40,6 +41,7 @@ class Settings:
     default_model: str = "google/gemini-2.5-flash"
     theme: str = "dark"
     max_agent_iterations: int = 10
+    chat_position: str = "bottom"
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
@@ -53,6 +55,7 @@ class Settings:
             default_model=data.get("default_model", "google/gemini-2.5-flash"),
             theme=data.get("theme", "dark"),
             max_agent_iterations=int(data.get("max_agent_iterations", 10) or 10),
+            chat_position=data.get("chat_position", "bottom") or "bottom",
         )
 
 
@@ -168,6 +171,20 @@ class SettingsManager:
         """Set max AI iterations (clamped to sensible bounds)."""
         safe_value = max(1, min(100, int(iterations)))
         self.settings.max_agent_iterations = safe_value
+
+    def get_chat_position(self) -> str:
+        """Get chat panel position."""
+        value = getattr(self.settings, "chat_position", DEFAULT_SETTINGS["chat_position"])
+        if value not in {"bottom", "left", "right"}:
+            value = DEFAULT_SETTINGS["chat_position"]
+        return value
+
+    def set_chat_position(self, position: str) -> None:
+        """Set chat panel position."""
+        allowed = {"bottom", "left", "right"}
+        if position not in allowed:
+            position = DEFAULT_SETTINGS["chat_position"]
+        self.settings.chat_position = position
 
     def reload(self) -> None:
         """Reload settings from file."""

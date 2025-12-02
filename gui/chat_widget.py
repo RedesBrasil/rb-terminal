@@ -9,9 +9,9 @@ from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit,
     QPushButton, QLabel, QScrollArea,
-    QFrame, QSizePolicy
+    QFrame, QSizePolicy, QStyle, QToolButton
 )
-from PySide6.QtCore import Qt, Signal, Slot, QTimer, QEvent
+from PySide6.QtCore import Qt, Signal, Slot, QTimer, QEvent, QSize
 from PySide6.QtGui import QFont, QColor, QPalette, QTextCursor, QKeyEvent
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,7 @@ class ChatInputField(QTextEdit):
     """Custom text input that sends on Enter and allows Shift+Enter for newlines."""
 
     enter_pressed = Signal()
+    resized = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -38,6 +39,10 @@ class ChatInputField(QTextEdit):
         else:
             super().keyPressEvent(event)
 
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self.resized.emit()
+
 
 class MessageBubble(QFrame):
     """A message bubble for displaying chat messages."""
@@ -49,21 +54,14 @@ class MessageBubble(QFrame):
         self.setFrameShadow(QFrame.Shadow.Raised)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 6, 8, 6)
+        layout.setContentsMargins(10, 4, 10, 4)
 
         # Message label
-        label = QTextEdit()
-        label.setReadOnly(True)
-        label.setPlainText(text)
-        label.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        label.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        label.setFrameShape(QFrame.Shape.NoFrame)
-
-        # Auto-resize height
-        doc = label.document()
-        doc.setTextWidth(label.viewport().width())
-        height = int(doc.size().height()) + 10
-        label.setFixedHeight(min(height, 300))
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
 
         # Style based on sender
         if is_user:
@@ -169,7 +167,7 @@ class ChatWidget(QWidget):
         self._messages_container = QWidget()
         self._messages_layout = QVBoxLayout(self._messages_container)
         self._messages_layout.setContentsMargins(8, 8, 8, 8)
-        self._messages_layout.setSpacing(8)
+        self._messages_layout.setSpacing(6)
         self._messages_layout.addStretch()  # Push messages to top
 
         self._scroll_area.setWidget(self._messages_container)
@@ -197,60 +195,21 @@ class ChatWidget(QWidget):
         self._input_field.setFixedHeight(60)
         self._input_field.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._input_field.enter_pressed.connect(self._on_send_clicked)
+        self._input_field.setViewportMargins(0, 0, 40, 0)
         input_layout.addWidget(self._input_field)
 
-        # Send button
-        self._send_btn = QPushButton("Enviar")
-        self._send_btn.setFixedWidth(70)
-        self._send_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #0e639c;
-                border: none;
-                border-radius: 4px;
-                padding: 8px;
-                color: white;
-            }
-            QPushButton:hover {
-                background-color: #1177bb;
-            }
-            QPushButton:pressed {
-                background-color: #0d5a8c;
-            }
-            QPushButton:disabled {
-                background-color: #555555;
-                color: #888888;
-            }
-        """)
-        self._send_btn.clicked.connect(self._on_send_clicked)
-        input_layout.addWidget(self._send_btn)
-
-        # Stop button
-        self._stop_btn = QPushButton("Parar")
-        self._stop_btn.setFixedWidth(70)
-        self._stop_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #d13438;
-                border: none;
-                border-radius: 4px;
-                padding: 8px;
-                color: white;
-            }
-            QPushButton:hover {
-                background-color: #e81123;
-            }
-            QPushButton:pressed {
-                background-color: #c50f1f;
-            }
-            QPushButton:disabled {
-                background-color: #555555;
-                color: #888888;
-            }
-        """)
-        self._stop_btn.clicked.connect(self._on_stop_clicked)
-        self._stop_btn.setEnabled(False)
-        input_layout.addWidget(self._stop_btn)
+        # Unified action button (Send / Stop) placed inside input field
+        self._action_btn = QToolButton(self._input_field)
+        self._action_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._action_btn.setIconSize(QSize(16, 16))
+        self._action_btn.setAutoRaise(True)
+        self._action_btn.clicked.connect(self._on_action_clicked)
+        self._action_btn.resize(28, 28)
+        self._input_field.resized.connect(self._position_action_button)
+        QTimer.singleShot(0, self._position_action_button)
 
         layout.addLayout(input_layout)
+        self._update_action_button()
 
     @Slot()
     def _on_send_clicked(self) -> None:
@@ -266,6 +225,70 @@ class ChatWidget(QWidget):
         """Handle stop button click."""
         self.stop_requested.emit()
         self.set_status("Parando...")
+
+    def _on_action_clicked(self) -> None:
+        """Handle action button depending on processing state."""
+        if self._is_processing:
+            self._on_stop_clicked()
+        else:
+            self._on_send_clicked()
+
+    def _update_action_button(self) -> None:
+        """Update action button icon and tooltip."""
+        if self._is_processing:
+            icon = self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserStop)
+            tooltip = "Parar IA"
+            self._action_btn.setStyleSheet("""
+                QToolButton {
+                    background-color: #d13438;
+                    border-radius: 6px;
+                    padding: 4px;
+                }
+                QToolButton:hover {
+                    background-color: #e81123;
+                }
+                QToolButton:pressed {
+                    background-color: #c50f1f;
+                }
+                QToolButton:disabled {
+                    background-color: #555555;
+                }
+            """)
+        else:
+            icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowForward)
+            tooltip = "Enviar mensagem"
+            self._action_btn.setStyleSheet("""
+                QToolButton {
+                    background-color: #0e639c;
+                    border-radius: 6px;
+                    padding: 4px;
+                }
+                QToolButton:hover {
+                    background-color: #1177bb;
+                }
+                QToolButton:pressed {
+                    background-color: #0d5a8c;
+                }
+                QToolButton:disabled {
+                    background-color: #555555;
+                }
+            """)
+
+        self._action_btn.setIcon(icon)
+        self._action_btn.setToolTip(tooltip)
+        self._position_action_button()
+
+    def _position_action_button(self) -> None:
+        """Position the action button inside the input field."""
+        if not hasattr(self, "_action_btn") or not self._action_btn:
+            return
+        margin = 8
+        size = self._action_btn.height()
+        viewport_rect = self._input_field.viewport().geometry()
+        x = viewport_rect.right() - size - margin + self._input_field.frameWidth()
+        y = viewport_rect.bottom() - size - margin + self._input_field.frameWidth()
+        self._action_btn.move(x, y)
+        self._action_btn.raise_()
 
     def add_message(self, text: str, is_user: bool) -> None:
         """
@@ -310,9 +333,12 @@ class ChatWidget(QWidget):
             processing: True if AI is processing, False otherwise
         """
         self._is_processing = processing
-        self._send_btn.setEnabled(not processing)
-        self._stop_btn.setEnabled(processing)
-        # Don't disable input field - only the send button is disabled
+        # Keep input enabled, but toggle action button behavior
+        if self._input_field.isEnabled():
+            self._action_btn.setEnabled(True)
+        else:
+            self._action_btn.setEnabled(False)
+        self._update_action_button()
 
         if processing:
             self.set_status("IA pensando...")
@@ -337,7 +363,8 @@ class ChatWidget(QWidget):
             enabled: True to enable, False to disable
         """
         self._input_field.setEnabled(enabled)
-        self._send_btn.setEnabled(enabled and not self._is_processing)
+        self._action_btn.setEnabled(enabled)
+        self._update_action_button()
 
         if not enabled:
             self.set_status("Conecte-se a um host primeiro")

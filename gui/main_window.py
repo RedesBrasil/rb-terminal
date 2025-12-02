@@ -12,7 +12,7 @@ import asyncssh
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QMessageBox, QStatusBar, QSplitter, QListWidget, QListWidgetItem,
-    QMenu, QFrame, QToolBar, QSizePolicy, QLineEdit
+    QMenu, QFrame, QToolBar, QSizePolicy, QLineEdit, QDialog
 )
 from PySide6.QtCore import Qt, Slot, Signal, QTimer, QPropertyAnimation, QEasingCurve, Property, QSize, QMetaObject, Q_ARG
 from PySide6.QtGui import QCloseEvent, QAction
@@ -20,6 +20,7 @@ from PySide6.QtGui import QCloseEvent, QAction
 from core.ssh_session import SSHSession, SSHConfig
 from core.agent import create_agent, SSHAgent
 from core.hosts import HostsManager
+from core.settings import get_settings_manager
 from gui.terminal_widget import TerminalWidget
 from gui.chat_widget import ChatWidget
 from gui.hosts_dialog import HostDialog, PasswordPromptDialog, QuickConnectDialog
@@ -102,6 +103,8 @@ class MainWindow(QMainWindow):
         self._current_device_type: Optional[str] = None
         self._chat_visible: bool = False  # Chat starts hidden
         self._last_config: Optional[SSHConfig] = None  # For reconnection
+        self._settings_manager = get_settings_manager()
+        self._chat_position = self._settings_manager.get_chat_position()
 
         # Pending connection data (used during pre-login)
         self._pending_connection: Optional[dict] = None
@@ -146,30 +149,22 @@ class MainWindow(QMainWindow):
         content_layout = QVBoxLayout(content_widget)
         content_layout.setContentsMargins(0, 0, 0, 0)
         content_layout.setSpacing(0)
+        self._content_layout = content_layout
 
         # Toolbar
         toolbar = self._create_toolbar()
         content_layout.addWidget(toolbar)
 
-        # Terminal area (with vertical splitter for chat)
-        self._terminal_chat_splitter = QSplitter(Qt.Orientation.Vertical)
-
         # Terminal widget
         self._terminal = TerminalWidget()
-        self._terminal_chat_splitter.addWidget(self._terminal)
 
-        # Chat panel at bottom (starts hidden)
+        # Chat panel (position determined by settings)
         self._chat_panel = QFrame()
-        self._chat_panel.setStyleSheet("background-color: #252526; border-top: 1px solid #3c3c3c;")
+        self._update_chat_panel_style()
         self._setup_chat_panel()
-        self._terminal_chat_splitter.addWidget(self._chat_panel)
 
-        # Set splitter sizes (chat hidden initially)
-        self._terminal_chat_splitter.setSizes([1, 0])
-        self._terminal_chat_splitter.setStretchFactor(0, 1)  # Terminal stretches
-        self._terminal_chat_splitter.setStretchFactor(1, 0)  # Chat fixed
-
-        content_layout.addWidget(self._terminal_chat_splitter, 1)
+        self._terminal_chat_splitter: Optional[QSplitter] = None
+        self._rebuild_terminal_chat_splitter()
 
         main_layout.addWidget(content_widget, 1)
 
@@ -219,6 +214,92 @@ class MainWindow(QMainWindow):
         # Chat widget
         self._chat = ChatWidget()
         layout.addWidget(self._chat)
+
+    def _update_chat_panel_style(self) -> None:
+        """Update chat panel border based on position."""
+        if not hasattr(self, "_chat_panel") or self._chat_panel is None:
+            return
+
+        if self._chat_position == "bottom":
+            border = "border-top: 1px solid #3c3c3c;"
+        elif self._chat_position == "left":
+            border = "border-right: 1px solid #3c3c3c;"
+        else:  # right
+            border = "border-left: 1px solid #3c3c3c;"
+
+        self._chat_panel.setStyleSheet(f"background-color: #252526; {border}")
+
+    def _create_terminal_chat_splitter(self) -> QSplitter:
+        """Create splitter configured for the selected chat position."""
+        if self._chat_position == "bottom":
+            splitter = QSplitter(Qt.Orientation.Vertical)
+            splitter.addWidget(self._terminal)
+            splitter.addWidget(self._chat_panel)
+            splitter.setStretchFactor(0, 1)
+            splitter.setStretchFactor(1, 0)
+        elif self._chat_position == "left":
+            splitter = QSplitter(Qt.Orientation.Horizontal)
+            splitter.addWidget(self._chat_panel)
+            splitter.addWidget(self._terminal)
+            splitter.setStretchFactor(0, 0)
+            splitter.setStretchFactor(1, 1)
+        else:  # right
+            splitter = QSplitter(Qt.Orientation.Horizontal)
+            splitter.addWidget(self._terminal)
+            splitter.addWidget(self._chat_panel)
+            splitter.setStretchFactor(0, 1)
+            splitter.setStretchFactor(1, 0)
+
+        splitter.setChildrenCollapsible(False)
+        return splitter
+
+    def _rebuild_terminal_chat_splitter(self) -> None:
+        """Rebuild splitter when chat layout or orientation changes."""
+        if hasattr(self, "_terminal_chat_splitter") and self._terminal_chat_splitter:
+            self._terminal_chat_splitter.setParent(None)
+
+        splitter = self._create_terminal_chat_splitter()
+        self._terminal_chat_splitter = splitter
+        self._content_layout.addWidget(splitter, 1)
+        self._apply_chat_visibility()
+
+    def _apply_chat_visibility(self) -> None:
+        """Adjust splitter sizes based on chat visibility."""
+        if not self._terminal_chat_splitter:
+            return
+
+        # Hide or show panel widget
+        if hasattr(self, "_chat_panel") and self._chat_panel:
+            self._chat_panel.setVisible(self._chat_visible)
+
+        if not self._chat_visible:
+            if self._chat_position == "bottom":
+                self._terminal_chat_splitter.setSizes([1, 0])
+            elif self._chat_position == "left":
+                self._terminal_chat_splitter.setSizes([0, 1])
+            else:  # right
+                self._terminal_chat_splitter.setSizes([1, 0])
+        else:
+            if self._chat_position == "bottom":
+                self._terminal_chat_splitter.setSizes([700, 300])
+            elif self._chat_position == "left":
+                self._terminal_chat_splitter.setSizes([300, 700])
+            else:  # right
+                self._terminal_chat_splitter.setSizes([700, 300])
+
+        # Sync toolbar toggle state without re-triggering signals
+        if hasattr(self, "_toggle_chat_btn"):
+            blocked = self._toggle_chat_btn.blockSignals(True)
+            self._toggle_chat_btn.setChecked(self._chat_visible)
+            self._toggle_chat_btn.blockSignals(blocked)
+
+    def _apply_settings_changes(self) -> None:
+        """Apply settings that might impact layout."""
+        new_position = self._settings_manager.get_chat_position()
+        if new_position != self._chat_position:
+            self._chat_position = new_position
+            self._update_chat_panel_style()
+            self._rebuild_terminal_chat_splitter()
 
     def _create_toolbar(self) -> QToolBar:
         """Create the main toolbar."""
@@ -484,18 +565,15 @@ class MainWindow(QMainWindow):
     def _on_toggle_chat(self) -> None:
         """Toggle chat panel visibility."""
         self._chat_visible = not self._chat_visible
-        if self._chat_visible:
-            # Show chat (terminal: 70%, chat: 30%)
-            self._terminal_chat_splitter.setSizes([700, 300])
-        else:
-            # Hide chat
-            self._terminal_chat_splitter.setSizes([1, 0])
+        self._apply_chat_visibility()
 
     @Slot()
     def _on_config_clicked(self) -> None:
         """Handle config button click - show settings dialog."""
         dialog = SettingsDialog(parent=self)
-        dialog.exec()
+        result = dialog.exec()
+        if result == QDialog.DialogCode.Accepted:
+            self._apply_settings_changes()
 
     @Slot()
     def _on_quick_connect(self) -> None:
