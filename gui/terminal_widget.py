@@ -4,6 +4,7 @@ Uses pyte as a VT100/xterm terminal emulator for proper escape sequence handling
 """
 
 import logging
+import re
 from typing import Optional
 
 import pyte
@@ -22,58 +23,100 @@ logger = logging.getLogger(__name__)
 DEFAULT_COLS = 120
 DEFAULT_ROWS = 30
 
-# ANSI color names to QColor mapping (standard terminal colors)
+# ANSI color names to QColor mapping (MobaXterm-style palette)
 ANSI_COLORS = {
     # Standard colors (0-7)
     "black": QColor(0, 0, 0),
-    "red": QColor(205, 49, 49),
-    "green": QColor(13, 188, 121),
-    "yellow": QColor(229, 229, 16),
-    "blue": QColor(36, 114, 200),
-    "magenta": QColor(188, 63, 188),
-    "cyan": QColor(17, 168, 205),
-    "white": QColor(229, 229, 229),
+    "red": QColor(255, 96, 96),
+    "green": QColor(96, 255, 96),
+    "yellow": QColor(255, 255, 54),
+    "blue": QColor(96, 96, 255),
+    "magenta": QColor(255, 54, 255),
+    "cyan": QColor(54, 255, 255),
+    "white": QColor(236, 236, 236),
     # Bright colors (8-15)
-    "brightblack": QColor(102, 102, 102),
-    "brightred": QColor(241, 76, 76),
-    "brightgreen": QColor(35, 209, 139),
-    "brightyellow": QColor(245, 245, 67),
-    "brightblue": QColor(59, 142, 234),
-    "brightmagenta": QColor(214, 112, 214),
-    "brightcyan": QColor(41, 184, 219),
+    "brightblack": QColor(54, 54, 54),
+    "brightred": QColor(255, 128, 128),
+    "brightgreen": QColor(128, 255, 128),
+    "brightyellow": QColor(255, 255, 128),
+    "brightblue": QColor(128, 128, 255),
+    "brightmagenta": QColor(255, 128, 255),
+    "brightcyan": QColor(128, 255, 255),
     "brightwhite": QColor(255, 255, 255),
     # Aliases
-    "brown": QColor(229, 229, 16),
-    "lightgray": QColor(229, 229, 229),
-    "lightgrey": QColor(229, 229, 229),
-    "darkgray": QColor(102, 102, 102),
-    "darkgrey": QColor(102, 102, 102),
-    "lightred": QColor(241, 76, 76),
-    "lightgreen": QColor(35, 209, 139),
-    "lightyellow": QColor(245, 245, 67),
-    "lightblue": QColor(59, 142, 234),
-    "lightmagenta": QColor(214, 112, 214),
-    "lightcyan": QColor(41, 184, 219),
+    "brown": QColor(255, 255, 54),
+    "lightgray": QColor(236, 236, 236),
+    "lightgrey": QColor(236, 236, 236),
+    "darkgray": QColor(54, 54, 54),
+    "darkgrey": QColor(54, 54, 54),
+    "lightred": QColor(255, 128, 128),
+    "lightgreen": QColor(128, 255, 128),
+    "lightyellow": QColor(255, 255, 128),
+    "lightblue": QColor(128, 128, 255),
+    "lightmagenta": QColor(255, 128, 255),
+    "lightcyan": QColor(128, 255, 255),
 }
 
-# Numeric color indices
+# Numeric color indices (MobaXterm-style palette)
 ANSI_COLORS_BY_INDEX = [
     QColor(0, 0, 0),        # 0: Black
-    QColor(205, 49, 49),    # 1: Red
-    QColor(13, 188, 121),   # 2: Green
-    QColor(229, 229, 16),   # 3: Yellow
-    QColor(36, 114, 200),   # 4: Blue
-    QColor(188, 63, 188),   # 5: Magenta
-    QColor(17, 168, 205),   # 6: Cyan
-    QColor(229, 229, 229),  # 7: White
-    QColor(102, 102, 102),  # 8: Bright Black
-    QColor(241, 76, 76),    # 9: Bright Red
-    QColor(35, 209, 139),   # 10: Bright Green
-    QColor(245, 245, 67),   # 11: Bright Yellow
-    QColor(59, 142, 234),   # 12: Bright Blue
-    QColor(214, 112, 214),  # 13: Bright Magenta
-    QColor(41, 184, 219),   # 14: Bright Cyan
+    QColor(255, 96, 96),    # 1: Red
+    QColor(96, 255, 96),    # 2: Green
+    QColor(255, 255, 54),   # 3: Yellow
+    QColor(96, 96, 255),    # 4: Blue
+    QColor(255, 54, 255),   # 5: Magenta
+    QColor(54, 255, 255),   # 6: Cyan
+    QColor(236, 236, 236),  # 7: White
+    QColor(54, 54, 54),     # 8: Bright Black
+    QColor(255, 128, 128),  # 9: Bright Red
+    QColor(128, 255, 128),  # 10: Bright Green
+    QColor(255, 255, 128),  # 11: Bright Yellow
+    QColor(128, 128, 255),  # 12: Bright Blue
+    QColor(255, 128, 255),  # 13: Bright Magenta
+    QColor(128, 255, 255),  # 14: Bright Cyan
     QColor(255, 255, 255),  # 15: Bright White
+]
+
+# Keyword highlighting patterns (priority order: first match wins)
+HIGHLIGHT_PATTERNS = [
+    # URLs - underline only (priority 1)
+    {"pattern": re.compile(r'https?://[^\s<>"\']+', re.IGNORECASE), "underline": True},
+    # IPv4 addresses - magenta (priority 2)
+    {"pattern": re.compile(r'\b(?:[1-9]\d?|1\d\d|2[0-4]\d|25[0-5])(?:\.\d{1,3}){3}\b'),
+     "color": QColor(255, 54, 255)},
+    # IPv6 addresses - magenta
+    {"pattern": re.compile(
+        r'(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|'  # Full
+        r'(?:[0-9a-fA-F]{1,4}:){1,7}:|'  # Ending with ::
+        r'(?:[0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|'
+        r'(?:[0-9a-fA-F]{1,4}:){1,5}(?::[0-9a-fA-F]{1,4}){1,2}|'
+        r'(?:[0-9a-fA-F]{1,4}:){1,4}(?::[0-9a-fA-F]{1,4}){1,3}|'
+        r'(?:[0-9a-fA-F]{1,4}:){1,3}(?::[0-9a-fA-F]{1,4}){1,4}|'
+        r'(?:[0-9a-fA-F]{1,4}:){1,2}(?::[0-9a-fA-F]{1,4}){1,5}|'
+        r'[0-9a-fA-F]{1,4}:(?::[0-9a-fA-F]{1,4}){1,6}|'
+        r':(?::[0-9a-fA-F]{1,4}){1,7}|'  # Starting with ::
+        r'::'),  # Just ::
+     "color": QColor(255, 54, 255)},
+    # MAC addresses - magenta
+    {"pattern": re.compile(r'(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}', re.IGNORECASE),
+     "color": QColor(255, 54, 255)},
+    # Errors - red (priority 3)
+    {"pattern": re.compile(
+        r'\b(errors?|erro|fail(ed)?|failure|rejected|denied|forbidden|invalid|'
+        r'unsupported|corrupt(ed)?|segfault|not\s+allowed|not\s+permitted|'
+        r'not\s+ok|no\s+\w+\s+found)\b', re.IGNORECASE),
+     "color": QColor(255, 96, 96)},
+    # Success - green (priority 4)
+    {"pattern": re.compile(
+        r'\b(ok|pass(ed)?|success(ful(ly)?)?|succeed(ed)?|connected|'
+        r'enabled|accepted|true|yes)\b', re.IGNORECASE),
+     "color": QColor(96, 255, 96)},
+    # Warnings - yellow (priority 5)
+    {"pattern": re.compile(
+        r'\b(warn(ing)?|deprecated|not\s+responding|no\s+response|'
+        r'could\s+not|cannot|unable\s+to|out\s+of\s+(space|memory)|'
+        r'low\s+(disk|memory)|disconnected|shutdown)\b', re.IGNORECASE),
+     "color": QColor(255, 255, 54)},
 ]
 
 
@@ -132,7 +175,7 @@ class TerminalWidget(QWidget):
     # Signal emitted when pre-login is cancelled (Ctrl+C or Escape)
     prelogin_cancelled = Signal()
 
-    DEFAULT_FG = QColor(220, 220, 220)
+    DEFAULT_FG = QColor(236, 236, 236)
     DEFAULT_BG = QColor(30, 30, 30)
 
     def __init__(self, parent: Optional[QWidget] = None):
@@ -143,6 +186,9 @@ class TerminalWidget(QWidget):
         self._rows = DEFAULT_ROWS
         self._screen = pyte.Screen(self._cols, self._rows)
         self._stream = pyte.Stream(self._screen)
+
+        # Keyword highlighting cache: {(row, col): {"color": QColor, "underline": bool}}
+        self._highlight_map = {}
 
         # Font settings
         self._font = self._create_font()
@@ -303,6 +349,11 @@ class TerminalWidget(QWidget):
                 fg = parse_color(char.fg, self.DEFAULT_FG)
                 bg = parse_color(char.bg, self.DEFAULT_BG)
 
+                # Apply keyword highlighting (only for chars without custom ANSI color)
+                highlight = self._highlight_map.get((row, col))
+                if highlight and highlight.get("color"):
+                    fg = highlight["color"]
+
                 # Handle reverse video
                 if char.reverse:
                     fg, bg = bg, fg
@@ -325,14 +376,16 @@ class TerminalWidget(QWidget):
                 if char_data and char_data != ' ':
                     painter.setPen(fg)
 
-                    style_key = (char.bold, char.italics, char.underscore)
+                    # Include underline from both pyte and keyword highlighting
+                    char_underline = char.underscore or (highlight and highlight.get("underline", False))
+                    style_key = (char.bold, char.italics, char_underline)
                     if style_key not in font_cache:
                         styled_font = QFont(self._font)
                         if char.bold:
                             styled_font.setBold(True)
                         if char.italics:
                             styled_font.setItalic(True)
-                        if char.underscore:
+                        if char_underline:
                             styled_font.setUnderline(True)
                         font_cache[style_key] = styled_font
 
@@ -517,6 +570,37 @@ class TerminalWidget(QWidget):
             self.clear_selection()
         self.input_entered.emit(data)
 
+    def _apply_keyword_highlighting(self) -> None:
+        """Apply keyword highlighting to the terminal buffer (only on text without ANSI colors)."""
+        self._highlight_map.clear()
+
+        for row in range(self._rows):
+            # Extract line text
+            line_text = ""
+            for col in range(self._cols):
+                char = self._screen.buffer[row].get(col)
+                if char and char.data:
+                    line_text += char.data
+                else:
+                    line_text += " "
+
+            # Apply patterns in priority order
+            highlighted_positions = set()
+
+            for pat_info in HIGHLIGHT_PATTERNS:
+                for match in pat_info["pattern"].finditer(line_text):
+                    for pos in range(match.start(), match.end()):
+                        if pos in highlighted_positions:
+                            continue
+                        char = self._screen.buffer[row].get(pos)
+                        # Only apply if char has no custom ANSI color (is "default")
+                        if char and char.fg in ("default", None):
+                            self._highlight_map[(row, pos)] = {
+                                "color": pat_info.get("color"),
+                                "underline": pat_info.get("underline", False),
+                            }
+                            highlighted_positions.add(pos)
+
     def append_output(self, text: str) -> None:
         """
         Append text to terminal output.
@@ -536,6 +620,9 @@ class TerminalWidget(QWidget):
                     self._stream.feed(char)
                 except Exception:
                     pass
+
+        # Apply keyword highlighting after processing
+        self._apply_keyword_highlighting()
 
         # Schedule throttled repaint
         self._schedule_update()
