@@ -578,8 +578,10 @@ class TerminalWidget(QWidget):
 
     def _send_input(self, data: str) -> None:
         """Send input data and emit signal."""
-        # Clear selection when user types
-        if self._selection_start is not None:
+        # Jump back to bottom when typing after scrolling history
+        if self._scroll_offset > 0 or self._wheel_delta_remainder != 0:
+            self._reset_scroll_position()
+        elif self._selection_start is not None:
             self.clear_selection()
         self.input_entered.emit(data)
 
@@ -799,10 +801,16 @@ class TerminalWidget(QWidget):
 
     def _reset_scroll_position(self) -> None:
         """Return to the bottom of the buffer and clear scroll state."""
+        if self._scroll_offset == 0 and self._wheel_delta_remainder == 0:
+            return
+
         self._scroll_offset = 0
         self._wheel_delta_remainder = 0
+
         if self._selection_start is not None:
             self.clear_selection()
+        else:
+            self._schedule_update()
 
     def _get_total_line_count(self) -> int:
         """Total lines stored (history + visible screen)."""
