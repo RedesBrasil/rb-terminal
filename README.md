@@ -29,7 +29,7 @@ python main.py
 | Tecla | Ação |
 |-------|------|
 | `Ctrl+H` | Toggle sidebar hosts |
-| `Ctrl+J` | Toggle chat IA |
+| `Ctrl+I` | Toggle chat IA |
 | `Ctrl+N` | Conexão rápida |
 | `Ctrl+D` | Desconectar |
 | `R` | Reconectar (quando desconectado) |

@@ -124,9 +124,13 @@ class Host:
     port: int = 22
     username: str = ""
     password_encrypted: Optional[str] = None
-    terminal_type: str = "xterm"      # xterm ou vt100
+    terminal_type: str = "xterm"      # xterm-256color, xterm ou vt100
     device_type: Optional[str] = None  # Linux, MikroTik, Huawei, Cisco, ou custom
+    disable_terminal_detection: bool = False  # Adiciona +ct ao username para MikroTik
     created_at: str
+
+    def get_effective_username(self) -> str:
+        # Retorna username com sufixo +ct se disable_terminal_detection=True
 ```
 
 ### core/device_types.py
@@ -179,6 +183,12 @@ await session.disconnect()
 - `disconnect_callback` - Callback chamado quando conexao e perdida inesperadamente
 - Detecta EOF, `ChannelClosedError`, `ConnectionLost`, `BrokenPipeError`
 - `_manual_disconnect` flag diferencia desconexao manual vs inesperada
+
+**Cores ANSI em MikroTik:**
+- MikroTik envia queries de terminal (DA1, DA2) para detectar capacidades antes de habilitar cores
+- `_respond_to_terminal_queries_async()` responde automaticamente com respostas VT220
+- Se nao funcionar, usar `disable_terminal_detection=True` no Host (adiciona sufixo `+ct` ao username)
+- Sufixo `+ct` desabilita deteccao de terminal no MikroTik, forcando modo sem cores nativas
 
 ### gui/main_window.py
 
@@ -275,8 +285,9 @@ Tres dialogs:
       "port": 22,
       "username": "admin",
       "password_encrypted": "gAAAAA...",
-      "terminal_type": "xterm",
+      "terminal_type": "xterm-256color",
       "device_type": "MikroTik",
+      "disable_terminal_detection": false,
       "created_at": "2025-01-15T10:00:00"
     }
   ]

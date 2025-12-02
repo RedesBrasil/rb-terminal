@@ -6,12 +6,44 @@ Designed to be reusable by the AI agent in future stages.
 
 import asyncio
 import logging
+import re
 from typing import Callable, Optional, Tuple, List
 from dataclasses import dataclass
 
 import asyncssh
 
 logger = logging.getLogger(__name__)
+
+# Terminal query patterns that require responses
+# These are escape sequences that remote devices send to detect terminal capabilities
+# MikroTik specifically uses these to decide whether to enable colors
+#
+# Response format reference (from VT220 spec):
+# - DA1 (Primary): CSI ? 62 ; Ps... c  where Ps are feature codes
+# - DA2 (Secondary): CSI > Pp ; Pv ; Pc c  where Pp=terminal type, Pv=version, Pc=ROM
+#
+# Feature codes for DA1: 1=132cols, 2=printer, 6=selective-erase, 8=UDK, 9=NRCS
+TERMINAL_QUERIES = {
+    # Primary Device Attributes (DA1) - ESC[c or ESC[0c
+    # Response: VT220 with 132-col, printer, selective-erase support
+    re.compile(rb'\x1b\[0?c(?!\?)'): b'\x1b[?62;1;2;6;8c',
+
+    # Secondary Device Attributes (DA2) - ESC[>c or ESC[>0c
+    # Response: VT220 (1), version 10, no ROM cartridge (0)
+    re.compile(rb'\x1b\[>0?c'): b'\x1b[>1;10;0c',
+
+    # DECID (ESC Z) - legacy terminal ID request
+    # Response: same as DA1
+    re.compile(rb'\x1bZ'): b'\x1b[?62;1;2;6;8c',
+
+    # Cursor Position Report (DSR 6) - ESC[6n
+    # Response: cursor at row 1, col 1
+    re.compile(rb'\x1b\[6n'): b'\x1b[1;1R',
+
+    # Device Status Report (DSR 5) - ESC[5n
+    # Response: terminal OK
+    re.compile(rb'\x1b\[5n'): b'\x1b[0n',
+}
 
 
 @dataclass
@@ -189,6 +221,8 @@ class SSHSession:
             self._conn = await asyncssh.connect(**connect_options)
 
             # Start interactive shell with PTY
+            logger.info(f"Creating PTY with term_type={self.config.terminal_type}")
+
             self._process = await self._conn.create_process(
                 term_type=self.config.terminal_type,
                 term_size=(self.config.term_width, self.config.term_height),
@@ -196,7 +230,7 @@ class SSHSession:
             )
 
             self._connected = True
-            logger.info("SSH connection established")
+            logger.info(f"SSH connection established (terminal: {self.config.terminal_type})")
 
             # Start reading output in background
             self._read_task = asyncio.create_task(self._read_output())
@@ -214,6 +248,12 @@ class SSHSession:
     async def _read_output(self) -> None:
         """Background task to read and forward terminal output."""
         unexpected_disconnect = False
+        # Track which queries we've already responded to (avoid duplicates)
+        responded_queries: set = set()
+        # Only respond to queries in the first few seconds of connection
+        query_response_window = 5.0  # seconds
+        connection_start = asyncio.get_event_loop().time()
+
         try:
             while self._connected and self._process:
                 try:
@@ -230,6 +270,12 @@ class SSHSession:
                         timeout=0.05
                     )
                     if data:
+                        # Handle terminal queries only in the first few seconds
+                        # Respond BEFORE processing output to minimize latency
+                        elapsed = asyncio.get_event_loop().time() - connection_start
+                        if elapsed < query_response_window:
+                            await self._respond_to_terminal_queries_async(data, responded_queries)
+
                         # Decode bytes to string, handling encoding errors
                         try:
                             text = data.decode('utf-8', errors='replace')
@@ -270,6 +316,38 @@ class SSHSession:
             # Notify about unexpected disconnection
             if unexpected_disconnect and self._disconnect_callback:
                 self._disconnect_callback()
+
+    async def _respond_to_terminal_queries_async(self, data: bytes, responded: set) -> None:
+        """
+        Check for terminal capability queries and send appropriate responses.
+        This is needed for devices like MikroTik that query terminal capabilities
+        before enabling colors.
+
+        Uses async write with drain to ensure immediate delivery.
+        Tracks which queries have been responded to avoid duplicates.
+
+        Args:
+            data: Raw bytes received from remote
+            responded: Set of query patterns already responded to
+        """
+        if not self._process or not self._process.stdin:
+            return
+
+        for pattern, response in TERMINAL_QUERIES.items():
+            # Skip if we've already responded to this query type
+            pattern_id = pattern.pattern
+            if pattern_id in responded:
+                continue
+
+            if pattern.search(data):
+                logger.info(f"Terminal query detected: {pattern.pattern!r}, responding with: {response!r}")
+                try:
+                    # Write and flush immediately to avoid MikroTik timeout
+                    self._process.stdin.write(response)
+                    await self._process.stdin.drain()
+                    responded.add(pattern_id)
+                except Exception as e:
+                    logger.warning(f"Failed to send terminal query response: {e}")
 
     async def disconnect(self) -> None:
         """Close SSH connection gracefully."""

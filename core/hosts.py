@@ -27,11 +27,25 @@ class Host:
     password_encrypted: Optional[str] = None
     terminal_type: str = "xterm"
     device_type: Optional[str] = None
+    disable_terminal_detection: bool = False  # Adds +ct suffix for MikroTik
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
         return asdict(self)
+
+    def get_effective_username(self) -> str:
+        """
+        Get username with any required suffixes.
+        For MikroTik, adds +ct to disable terminal detection and enable colors.
+        """
+        if not self.username:
+            return ""
+        if self.disable_terminal_detection:
+            # Add +ct suffix if not already present
+            if '+' not in self.username:
+                return f"{self.username}+ct"
+        return self.username
 
     @classmethod
     def from_dict(cls, data: dict) -> "Host":
@@ -45,6 +59,7 @@ class Host:
             password_encrypted=data.get("password_encrypted"),
             terminal_type=data.get("terminal_type", "xterm"),
             device_type=data.get("device_type"),
+            disable_terminal_detection=data.get("disable_terminal_detection", False),
             created_at=data.get("created_at", datetime.now().isoformat())
         )
 
@@ -116,7 +131,8 @@ class HostsManager:
         username: str = "",
         password: Optional[str] = None,
         terminal_type: str = "xterm",
-        device_type: Optional[str] = None
+        device_type: Optional[str] = None,
+        disable_terminal_detection: bool = False
     ) -> Host:
         """
         Add a new host.
@@ -129,6 +145,7 @@ class HostsManager:
             password: SSH password (will be encrypted, None = prompt on connect)
             terminal_type: Terminal type (xterm or vt100)
             device_type: Type of device (Linux, MikroTik, Huawei, Cisco, or custom)
+            disable_terminal_detection: If True, adds +ct suffix for MikroTik
 
         Returns:
             The created Host object
@@ -144,7 +161,8 @@ class HostsManager:
             username=username,
             password_encrypted=password_encrypted,
             terminal_type=terminal_type,
-            device_type=device_type if device_type else None
+            device_type=device_type if device_type else None,
+            disable_terminal_detection=disable_terminal_detection
         )
 
         self._hosts.append(new_host)
@@ -162,6 +180,7 @@ class HostsManager:
         password: Optional[str] = None,
         terminal_type: Optional[str] = None,
         device_type: Optional[str] = None,
+        disable_terminal_detection: Optional[bool] = None,
         clear_password: bool = False
     ) -> Optional[Host]:
         """
@@ -176,6 +195,7 @@ class HostsManager:
             password: New password (None = keep current, empty string = clear)
             terminal_type: New terminal type (None = keep current)
             device_type: New device type (None = keep current)
+            disable_terminal_detection: If True, adds +ct suffix for MikroTik
             clear_password: If True, remove saved password
 
         Returns:
@@ -198,6 +218,8 @@ class HostsManager:
             existing.terminal_type = terminal_type
         if device_type is not None:
             existing.device_type = device_type if device_type else None
+        if disable_terminal_detection is not None:
+            existing.disable_terminal_detection = disable_terminal_detection
 
         if clear_password:
             existing.password_encrypted = None

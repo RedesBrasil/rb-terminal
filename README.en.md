@@ -27,7 +27,7 @@ python main.py
 | Key | Action |
 |-----|--------|
 | `Ctrl+H` | Toggle hosts sidebar |
-| `Ctrl+J` | Toggle AI chat |
+| `Ctrl+I` | Toggle AI chat |
 | `Ctrl+N` | Quick connect |
 | `Ctrl+D` | Disconnect |
 | `R` | Reconnect (when disconnected) |

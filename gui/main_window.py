@@ -591,10 +591,11 @@ class MainWindow(QMainWindow):
             return
 
         # Has username - connect directly (password will be asked via keyboard-interactive if needed)
+        # Use get_effective_username() to apply +ct suffix for MikroTik if configured
         config = SSHConfig(
             host=host.host,
             port=host.port,
-            username=host.username,
+            username=host.get_effective_username(),
             password=password or "",
             terminal_type=host.terminal_type,
             term_width=cols,
