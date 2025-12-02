@@ -4,53 +4,15 @@ Provides tools for executing commands on remote hosts.
 """
 
 import asyncio
-import json
 import logging
-import sys
-from pathlib import Path
 from typing import Optional, Callable, Any
 from dataclasses import dataclass
 
 import httpx
 
+from core.settings import get_settings_manager
+
 logger = logging.getLogger(__name__)
-
-# Config directory
-CONFIG_DIR = Path.home() / ".ssh-ai-terminal"
-
-
-def get_base_path() -> Path:
-    """Get base path for resources (supports PyInstaller)."""
-    if getattr(sys, 'frozen', False):
-        # Running as compiled executable
-        return Path(sys._MEIPASS)
-    else:
-        # Running as script
-        return Path(__file__).parent.parent
-
-
-def load_settings() -> dict:
-    """Load settings from config file."""
-    # Try PyInstaller bundled config first
-    base_path = get_base_path()
-    bundled_config = base_path / "config" / "settings.json"
-    if bundled_config.exists():
-        with open(bundled_config, "r", encoding="utf-8") as f:
-            return json.load(f)
-
-    # Try local config (for development)
-    local_config = Path(__file__).parent.parent / "config" / "settings.json"
-    if local_config.exists():
-        with open(local_config, "r", encoding="utf-8") as f:
-            return json.load(f)
-
-    # Try user config directory
-    user_config = CONFIG_DIR / "settings.json"
-    if user_config.exists():
-        with open(user_config, "r", encoding="utf-8") as f:
-            return json.load(f)
-
-    return {}
 
 
 @dataclass
@@ -117,9 +79,9 @@ Você tem acesso à ferramenta execute_command para rodar comandos no terminal S
             deps: Agent dependencies including command executor
         """
         self.deps = deps
-        self.settings = load_settings()
-        self.api_key = self.settings.get("openrouter_api_key", "")
-        self.model = self.settings.get("default_model", "google/gemini-2.5-flash")
+        self._settings_manager = get_settings_manager()
+        self.api_key = self._settings_manager.get_api_key()
+        self.model = self._settings_manager.get_model()
         self.messages: list[dict] = []
         self._cancelled = False
         self._http_client: Optional[httpx.AsyncClient] = None

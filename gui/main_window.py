@@ -23,6 +23,7 @@ from core.hosts import HostsManager
 from gui.terminal_widget import TerminalWidget
 from gui.chat_widget import ChatWidget
 from gui.hosts_dialog import HostDialog, PasswordPromptDialog, QuickConnectDialog
+from gui.settings_dialog import SettingsDialog
 
 logger = logging.getLogger(__name__)
 
@@ -275,20 +276,16 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        # Disconnect button
-        self._disconnect_btn = QAction("Desconectar", self)
-        self._disconnect_btn.setToolTip("Desconectar sessao atual (Ctrl+D)")
-        self._disconnect_btn.setShortcut("Ctrl+D")
-        self._disconnect_btn.triggered.connect(self._on_disconnect_clicked)
-        self._disconnect_btn.setEnabled(False)
-        toolbar.addAction(self._disconnect_btn)
-
-        toolbar.addSeparator()
-
         # Spacer
         spacer = QWidget()
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
+
+        # Config button (right side)
+        self._config_btn = QAction("Config", self)
+        self._config_btn.setToolTip("Configuracoes do aplicativo")
+        self._config_btn.triggered.connect(self._on_config_clicked)
+        toolbar.addAction(self._config_btn)
 
         return toolbar
 
@@ -418,7 +415,6 @@ class MainWindow(QMainWindow):
 
         # Update toolbar buttons
         self._quick_connect_btn.setEnabled(not connected)
-        self._disconnect_btn.setEnabled(connected)
 
         # Update chat state
         self._chat.set_enabled_state(connected)
@@ -472,6 +468,12 @@ class MainWindow(QMainWindow):
         else:
             # Hide chat
             self._terminal_chat_splitter.setSizes([1, 0])
+
+    @Slot()
+    def _on_config_clicked(self) -> None:
+        """Handle config button click - show settings dialog."""
+        dialog = SettingsDialog(parent=self)
+        dialog.exec()
 
     @Slot()
     def _on_quick_connect(self) -> None:

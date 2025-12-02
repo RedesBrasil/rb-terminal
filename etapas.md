@@ -195,7 +195,7 @@ curl -s "https://openrouter.ai/api/v1/chat/completions" \
 - [ ] Abas para múltiplas sessões SSH
 - [ ] Nova aba: Ctrl+T ou botão "+"
 - [ ] Fechar aba: botão X na aba
-- [ ] Histórico de comandos (setas ↑↓)
+- [ ] Histórico de comandos (setas ↑↓) (já esta funcionando)
 - [ ] Suporte a cores ANSI (output colorido)
 - [ ] Redimensionamento de terminal (PTY resize)
 - [ ] Indicador de status na aba (conectado/desconectado)
@@ -204,7 +204,7 @@ curl -s "https://openrouter.ai/api/v1/chat/completions" \
 1. Conectar em 2 hosts diferentes em abas separadas
 2. Alternar entre abas
 3. Comando com cores (ex: `ls --color`) mostra colorido
-4. Seta pra cima recupera último comando
+4. Seta pra cima recupera último comando (já funciona)
 5. Redimensionar janela → terminal se ajusta
 6. Fechar aba desconecta a sessão
 

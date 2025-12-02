@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QWidget, QApplication
 from PySide6.QtCore import Qt, Signal, QTimer, QElapsedTimer, QPoint
 from PySide6.QtGui import (
     QFont, QKeyEvent, QColor, QPainter, QFontMetrics, QFontDatabase,
-    QMouseEvent
+    QMouseEvent, QWheelEvent
 )
 from PySide6.QtCore import QEvent
 
@@ -177,6 +177,11 @@ class TerminalWidget(QWidget):
         self._selection_start: Optional[QPoint] = None  # (col, row)
         self._selection_end: Optional[QPoint] = None    # (col, row)
         self._is_selecting = False
+
+        # Font zoom settings
+        self._font_size = 11  # Default font size
+        self._min_font_size = 6
+        self._max_font_size = 32
 
         # Setup
         self._setup_ui()
@@ -451,6 +456,21 @@ class TerminalWidget(QWidget):
         # Ctrl+V - Paste from clipboard
         if key == Qt.Key.Key_V and modifiers == Qt.KeyboardModifier.ControlModifier:
             self._paste_from_clipboard()
+            return
+
+        # Ctrl+Plus / Ctrl+= - Zoom in
+        if key in (Qt.Key.Key_Plus, Qt.Key.Key_Equal) and modifiers == Qt.KeyboardModifier.ControlModifier:
+            self._zoom_in()
+            return
+
+        # Ctrl+Minus - Zoom out
+        if key == Qt.Key.Key_Minus and modifiers == Qt.KeyboardModifier.ControlModifier:
+            self._zoom_out()
+            return
+
+        # Ctrl+0 - Reset zoom
+        if key == Qt.Key.Key_0 and modifiers == Qt.KeyboardModifier.ControlModifier:
+            self.reset_zoom()
             return
 
         # Shift+Insert - Paste from clipboard
@@ -832,6 +852,47 @@ class TerminalWidget(QWidget):
             text = text.replace('\r\n', '\r').replace('\n', '\r')
             self._send_input(text)
             logger.debug(f"Pasted from clipboard: {len(text)} chars")
+
+    # --- Font Zoom (Ctrl + Mouse Wheel) ---
+
+    def wheelEvent(self, event: QWheelEvent) -> None:
+        """Handle mouse wheel - zoom with Ctrl, otherwise ignore."""
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            # Ctrl + Wheel = Zoom
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self._zoom_in()
+            elif delta < 0:
+                self._zoom_out()
+            event.accept()
+        else:
+            # Pass to parent (no scroll in terminal for now)
+            super().wheelEvent(event)
+
+    def _zoom_in(self) -> None:
+        """Increase font size."""
+        if self._font_size < self._max_font_size:
+            self._font_size += 1
+            self._apply_font_size()
+
+    def _zoom_out(self) -> None:
+        """Decrease font size."""
+        if self._font_size > self._min_font_size:
+            self._font_size -= 1
+            self._apply_font_size()
+
+    def _apply_font_size(self) -> None:
+        """Apply the current font size and update terminal."""
+        self._font.setPointSize(self._font_size)
+        self._update_font_metrics()
+        self._resize_terminal()
+        self._schedule_update()
+        logger.debug(f"Font size changed to {self._font_size}")
+
+    def reset_zoom(self) -> None:
+        """Reset font size to default (11)."""
+        self._font_size = 11
+        self._apply_font_size()
 
     def showEvent(self, event) -> None:
         """Handle show event."""
