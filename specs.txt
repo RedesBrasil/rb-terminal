@@ -72,7 +72,7 @@ Histórico de chat persistido localmente por sessão
 5. Sem dependências externas
 
 Tudo local (sem banco de dados externo)
-Configurações em ~/.ssh-ai-terminal/ ou similar
+Configurações em ~/.rb-terminal/ ou similar
 
 6. Controle e Segurança
 
@@ -91,7 +91,7 @@ Mensagens de erro claras para o usuário
 
 
 Arquitetura Sugerida
-ssh-ai-terminal/
+rb-terminal/
 ├── main.py                 # Entry point
 ├── core/
 │   ├── agent.py            # PydanticAI agent + tools
@@ -164,7 +164,7 @@ No file browser: navega pastas, faz upload/download de arquivos
 Configuração Inicial
 
 ```json
-// ~/.ssh-ai-terminal/settings.json
+// ~/.rb-terminal/settings.json
 {
   "openrouter_api_key": "sk-or-...",
   "default_model": "anthropic/claude-3.5-sonnet",
@@ -173,7 +173,7 @@ Configuração Inicial
 ```
 
 ```json
-// ~/.ssh-ai-terminal/hosts.json
+// ~/.rb-terminal/hosts.json
 {
   "hosts": [
     {

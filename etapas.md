@@ -13,7 +13,7 @@
 
 ### Arquivos a criar:
 ```
-ssh-ai-terminal/
+rb-terminal/
 ├── main.py
 ├── core/
 │   └── ssh_session.py
@@ -177,7 +177,7 @@ curl -s "https://openrouter.ai/api/v1/chat/completions" \
 
 ### Notas técnicas:
 - Chave Fernet gerada no primeiro uso e salva em arquivo separado
-- hosts.json fica em ~/.ssh-ai-terminal/
+- hosts.json fica em ~/.rb-terminal/
 
 ---
 
@@ -353,7 +353,7 @@ chmod +x build.sh
 ./build.sh
 ```
 
-O executável será gerado em: `dist/SSH-AI-Terminal.exe`
+O executável será gerado em: `dist/RB-Terminal.exe`
 
 ### Arquivos de build
 | Arquivo     | Descrição                              |
@@ -367,7 +367,7 @@ O executável será gerado em: `dist/SSH-AI-Terminal.exe`
 ```bash
 # Via Docker (Linux gerando .exe Windows)
 docker run --rm -v "$(pwd):/src" batonogov/pyinstaller-windows:latest \
-    "pip install PySide6 asyncssh qasync && pyinstaller --onefile --noconsole --name SSH-AI-Terminal main.py"
+    "pip install PySide6 asyncssh qasync && pyinstaller --onefile --noconsole --name RB-Terminal main.py"
 ```
 
 ```cmd

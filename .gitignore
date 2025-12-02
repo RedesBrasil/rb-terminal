@@ -10,6 +10,9 @@ __pycache__/
 build/
 develop-eggs/
 dist/
+!dist/
+dist/*
+!dist/RB-Terminal.exe
 downloads/
 eggs/
 .eggs/
