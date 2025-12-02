@@ -8,10 +8,11 @@ from typing import Optional
 
 import pyte
 
-from PySide6.QtWidgets import QWidget
-from PySide6.QtCore import Qt, Signal, QTimer, QElapsedTimer
+from PySide6.QtWidgets import QWidget, QApplication
+from PySide6.QtCore import Qt, Signal, QTimer, QElapsedTimer, QPoint
 from PySide6.QtGui import (
-    QFont, QKeyEvent, QColor, QPainter, QFontMetrics, QFontDatabase
+    QFont, QKeyEvent, QColor, QPainter, QFontMetrics, QFontDatabase,
+    QMouseEvent
 )
 from PySide6.QtCore import QEvent
 
@@ -172,6 +173,11 @@ class TerminalWidget(QWidget):
         self._prelogin_username = ""
         self._prelogin_need_password = True
 
+        # Text selection (copy on select like PuTTY)
+        self._selection_start: Optional[QPoint] = None  # (col, row)
+        self._selection_end: Optional[QPoint] = None    # (col, row)
+        self._is_selecting = False
+
         # Setup
         self._setup_ui()
         self._update_font_metrics()
@@ -268,6 +274,10 @@ class TerminalWidget(QWidget):
         # Background
         painter.fillRect(self.rect(), self.DEFAULT_BG)
 
+        # Selection highlight color
+        selection_bg = QColor(70, 130, 180)  # Steel blue
+        selection_fg = QColor(255, 255, 255)
+
         # Cache for styled fonts
         font_cache = {}
 
@@ -281,6 +291,9 @@ class TerminalWidget(QWidget):
                 x = col * self._char_width
                 char = line[col]
 
+                # Check if this cell is selected
+                is_selected = self._is_cell_selected(col, row)
+
                 # Get colors
                 fg = parse_color(char.fg, self.DEFAULT_FG)
                 bg = parse_color(char.bg, self.DEFAULT_BG)
@@ -293,8 +306,13 @@ class TerminalWidget(QWidget):
                 if char.bold and char.fg in ("default", None):
                     fg = QColor(255, 255, 255)
 
-                # Draw background if not default
-                if bg != self.DEFAULT_BG:
+                # Override colors if selected
+                if is_selected:
+                    bg = selection_bg
+                    fg = selection_fg
+
+                # Draw background if not default or if selected
+                if bg != self.DEFAULT_BG or is_selected:
                     painter.fillRect(x, y, self._char_width, self._char_height, bg)
 
                 # Draw character
@@ -333,15 +351,22 @@ class TerminalWidget(QWidget):
         painter.end()
 
     def event(self, event) -> bool:
-        """Override event to capture Tab before Qt uses it for focus navigation."""
+        """Override event to capture special keys before Qt processes them."""
         if event.type() == event.Type.KeyPress:
-            if event.key() == Qt.Key.Key_Tab:
+            key = event.key()
+            modifiers = event.modifiers()
+
+            if key == Qt.Key.Key_Tab:
                 # Send Tab to terminal instead of changing focus
                 self._send_input("\t")
                 return True
-            elif event.key() == Qt.Key.Key_Backtab:
+            elif key == Qt.Key.Key_Backtab:
                 # Shift+Tab - also send to terminal
                 self._send_input("\x1b[Z")  # Shift+Tab escape sequence
+                return True
+            elif key == Qt.Key.Key_Insert and (modifiers & Qt.KeyboardModifier.ShiftModifier):
+                # Shift+Insert - Paste from clipboard
+                self._paste_from_clipboard()
                 return True
         return super().event(event)
 
@@ -423,6 +448,16 @@ class TerminalWidget(QWidget):
             self._send_input("\x03")
             return
 
+        # Ctrl+V - Paste from clipboard
+        if key == Qt.Key.Key_V and modifiers == Qt.KeyboardModifier.ControlModifier:
+            self._paste_from_clipboard()
+            return
+
+        # Shift+Insert - Paste from clipboard
+        if key == Qt.Key.Key_Insert and (modifiers & Qt.KeyboardModifier.ShiftModifier):
+            self._paste_from_clipboard()
+            return
+
         # Ctrl+D
         if key == Qt.Key.Key_D and modifiers == Qt.KeyboardModifier.ControlModifier:
             self._send_input("\x04")
@@ -457,6 +492,9 @@ class TerminalWidget(QWidget):
 
     def _send_input(self, data: str) -> None:
         """Send input data and emit signal."""
+        # Clear selection when user types
+        if self._selection_start is not None:
+            self.clear_selection()
         self.input_entered.emit(data)
 
     def append_output(self, text: str) -> None:
@@ -653,6 +691,147 @@ class TerminalWidget(QWidget):
     def set_focus(self) -> None:
         """Set focus to the terminal."""
         self.setFocus()
+
+    # --- Text Selection (copy on select) ---
+
+    def _pixel_to_cell(self, pos: QPoint) -> QPoint:
+        """Convert pixel position to terminal cell (col, row)."""
+        col = max(0, min(pos.x() // self._char_width, self._cols - 1))
+        row = max(0, min(pos.y() // self._char_height, self._rows - 1))
+        return QPoint(col, row)
+
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        """Handle mouse press - start selection."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._selection_start = self._pixel_to_cell(event.pos())
+            self._selection_end = self._selection_start
+            self._is_selecting = True
+            self._schedule_update()
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        """Handle mouse move - update selection."""
+        if self._is_selecting:
+            self._selection_end = self._pixel_to_cell(event.pos())
+            self._schedule_update()
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        """Handle mouse release - finish selection and copy to clipboard, or paste with right click."""
+        if event.button() == Qt.MouseButton.LeftButton and self._is_selecting:
+            self._selection_end = self._pixel_to_cell(event.pos())
+            self._is_selecting = False
+
+            # Copy selected text to clipboard
+            selected_text = self._get_selected_text()
+            if selected_text:
+                clipboard = QApplication.clipboard()
+                clipboard.setText(selected_text)
+                logger.debug(f"Copied to clipboard: {len(selected_text)} chars")
+
+            self._schedule_update()
+
+        # Right click - paste from clipboard
+        elif event.button() == Qt.MouseButton.RightButton:
+            self._paste_from_clipboard()
+
+        super().mouseReleaseEvent(event)
+
+    def _get_selection_bounds(self) -> tuple[QPoint, QPoint]:
+        """Get selection bounds ordered (start before end)."""
+        if self._selection_start is None or self._selection_end is None:
+            return None, None
+
+        start = self._selection_start
+        end = self._selection_end
+
+        # Order by row, then by column
+        if (start.y() > end.y()) or (start.y() == end.y() and start.x() > end.x()):
+            start, end = end, start
+
+        return start, end
+
+    def _is_cell_selected(self, col: int, row: int) -> bool:
+        """Check if a cell is within the selection."""
+        start, end = self._get_selection_bounds()
+        if start is None or end is None:
+            return False
+
+        # Same row
+        if start.y() == end.y():
+            return row == start.y() and start.x() <= col <= end.x()
+
+        # First row
+        if row == start.y():
+            return col >= start.x()
+
+        # Last row
+        if row == end.y():
+            return col <= end.x()
+
+        # Middle rows
+        return start.y() < row < end.y()
+
+    def _get_selected_text(self) -> str:
+        """Get the text within the current selection."""
+        start, end = self._get_selection_bounds()
+        if start is None or end is None:
+            return ""
+
+        # Don't copy if it's just a click (no actual selection)
+        if start.x() == end.x() and start.y() == end.y():
+            return ""
+
+        lines = []
+        buffer = self._screen.buffer
+
+        for row in range(start.y(), end.y() + 1):
+            if row >= len(buffer):
+                continue
+
+            line = buffer[row]
+            line_text = ""
+
+            if start.y() == end.y():
+                # Single row selection
+                for col in range(start.x(), min(end.x() + 1, len(line))):
+                    line_text += line[col].data if line[col].data else " "
+            elif row == start.y():
+                # First row
+                for col in range(start.x(), min(self._cols, len(line))):
+                    line_text += line[col].data if line[col].data else " "
+            elif row == end.y():
+                # Last row
+                for col in range(0, min(end.x() + 1, len(line))):
+                    line_text += line[col].data if line[col].data else " "
+            else:
+                # Middle row - full line
+                for col in range(min(self._cols, len(line))):
+                    line_text += line[col].data if line[col].data else " "
+
+            lines.append(line_text.rstrip())
+
+        return "\n".join(lines)
+
+    def clear_selection(self) -> None:
+        """Clear the current selection."""
+        self._selection_start = None
+        self._selection_end = None
+        self._is_selecting = False
+        self._schedule_update()
+
+    def _paste_from_clipboard(self) -> None:
+        """Paste text from clipboard to terminal."""
+        clipboard = QApplication.clipboard()
+        text = clipboard.text()
+        if text:
+            # Clear any selection before pasting
+            if self._selection_start is not None:
+                self.clear_selection()
+            # Send text to terminal (convert newlines to carriage returns)
+            text = text.replace('\r\n', '\r').replace('\n', '\r')
+            self._send_input(text)
+            logger.debug(f"Pasted from clipboard: {len(text)} chars")
 
     def showEvent(self, event) -> None:
         """Handle show event."""
