@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 DEFAULT_COLS = 120
 DEFAULT_ROWS = 30
 
+# Total scrollback lines to keep in memory
+SCROLLBACK_LINES = 5000
+
 # ANSI color names to QColor mapping (MobaXterm-style palette)
 ANSI_COLORS = {
     # Standard colors (0-7)
@@ -184,11 +187,13 @@ class TerminalWidget(QWidget):
         # Terminal emulator (pyte)
         self._cols = DEFAULT_COLS
         self._rows = DEFAULT_ROWS
-        self._screen = pyte.Screen(self._cols, self._rows)
+        self._screen = pyte.HistoryScreen(self._cols, self._rows, history=SCROLLBACK_LINES)
         self._stream = pyte.Stream(self._screen)
 
-        # Keyword highlighting cache: {(row, col): {"color": QColor, "underline": bool}}
-        self._highlight_map = {}
+        # Scrollback state
+        self._scroll_offset = 0  # Visible lines above the live bottom
+        self._wheel_delta_remainder = 0
+        self._scroll_lines_per_notch = 3
 
         # Font settings
         self._font = self._create_font()
@@ -312,6 +317,7 @@ class TerminalWidget(QWidget):
             self._cols = new_cols
             self._rows = new_rows
             self._screen.resize(self._rows, self._cols)
+            self._scroll_offset = min(self._scroll_offset, self._get_max_scroll_offset())
             logger.debug(f"Terminal resized to {self._cols}x{self._rows}")
             self._schedule_update()
 
@@ -332,13 +338,14 @@ class TerminalWidget(QWidget):
         # Cache for styled fonts
         font_cache = {}
 
-        # Render each character
-        buffer = self._screen.buffer
-        for row in range(min(self._rows, len(buffer))):
-            y = row * self._char_height
-            line = buffer[row]
+        visible_lines = self._get_visible_lines()
+        highlight_map = self._build_highlight_map(visible_lines)
 
-            for col in range(min(self._cols, len(line))):
+        # Render each character
+        for row, line in enumerate(visible_lines):
+            y = row * self._char_height
+
+            for col in range(self._cols):
                 x = col * self._char_width
                 char = line[col]
 
@@ -350,7 +357,7 @@ class TerminalWidget(QWidget):
                 bg = parse_color(char.bg, self.DEFAULT_BG)
 
                 # Apply keyword highlighting (only for chars without custom ANSI color)
-                highlight = self._highlight_map.get((row, col))
+                highlight = highlight_map.get((row, col))
                 if highlight and highlight.get("color"):
                     fg = highlight["color"]
 
@@ -397,7 +404,7 @@ class TerminalWidget(QWidget):
         painter.setFont(self._font)
 
         # Draw cursor
-        if self._cursor_visible and self.hasFocus():
+        if self._cursor_visible and self.hasFocus() and self._scroll_offset == 0:
             cursor_x = self._screen.cursor.x * self._char_width
             cursor_y = self._screen.cursor.y * self._char_height
             painter.fillRect(
@@ -474,10 +481,16 @@ class TerminalWidget(QWidget):
 
         # Page Up/Down
         if key == Qt.Key.Key_PageUp:
-            self._send_input("\x1b[5~")
+            if modifiers & Qt.KeyboardModifier.ShiftModifier:
+                self._scroll_by_lines(self._rows)
+            else:
+                self._send_input("\x1b[5~")
             return
         if key == Qt.Key.Key_PageDown:
-            self._send_input("\x1b[6~")
+            if modifiers & Qt.KeyboardModifier.ShiftModifier:
+                self._scroll_by_lines(-self._rows)
+            else:
+                self._send_input("\x1b[6~")
             return
 
         # Delete
@@ -570,37 +583,6 @@ class TerminalWidget(QWidget):
             self.clear_selection()
         self.input_entered.emit(data)
 
-    def _apply_keyword_highlighting(self) -> None:
-        """Apply keyword highlighting to the terminal buffer (only on text without ANSI colors)."""
-        self._highlight_map.clear()
-
-        for row in range(self._rows):
-            # Extract line text
-            line_text = ""
-            for col in range(self._cols):
-                char = self._screen.buffer[row].get(col)
-                if char and char.data:
-                    line_text += char.data
-                else:
-                    line_text += " "
-
-            # Apply patterns in priority order
-            highlighted_positions = set()
-
-            for pat_info in HIGHLIGHT_PATTERNS:
-                for match in pat_info["pattern"].finditer(line_text):
-                    for pos in range(match.start(), match.end()):
-                        if pos in highlighted_positions:
-                            continue
-                        char = self._screen.buffer[row].get(pos)
-                        # Only apply if char has no custom ANSI color (is "default")
-                        if char and char.fg in ("default", None):
-                            self._highlight_map[(row, pos)] = {
-                                "color": pat_info.get("color"),
-                                "underline": pat_info.get("underline", False),
-                            }
-                            highlighted_positions.add(pos)
-
     def append_output(self, text: str) -> None:
         """
         Append text to terminal output.
@@ -608,6 +590,8 @@ class TerminalWidget(QWidget):
         """
         if not text:
             return
+
+        prev_total_lines = self._get_total_line_count()
 
         # Feed to pyte stream - process immediately
         try:
@@ -621,8 +605,16 @@ class TerminalWidget(QWidget):
                 except Exception:
                     pass
 
-        # Apply keyword highlighting after processing
-        self._apply_keyword_highlighting()
+        # Adjust scroll offset if user is looking at history
+        new_total_lines = self._get_total_line_count()
+        added_lines = max(0, new_total_lines - prev_total_lines)
+        if self._scroll_offset > 0 and added_lines > 0:
+            self._scroll_offset = min(
+                self._scroll_offset + added_lines,
+                self._get_max_scroll_offset()
+            )
+        else:
+            self._scroll_offset = min(self._scroll_offset, self._get_max_scroll_offset())
 
         # Schedule throttled repaint
         self._schedule_update()
@@ -630,6 +622,7 @@ class TerminalWidget(QWidget):
     def clear(self) -> None:
         """Clear terminal content."""
         self._screen.reset()
+        self._reset_scroll_position()
         self._disconnected_mode = False
         self._prelogin_mode = False
         self._prelogin_stage = ""
@@ -640,6 +633,7 @@ class TerminalWidget(QWidget):
     def show_disconnected_message(self) -> None:
         """Show disconnected message and enable reconnect mode."""
         self._screen.reset()
+        self._reset_scroll_position()
         self._disconnected_mode = True
 
         # Center the message on screen
@@ -672,6 +666,7 @@ class TerminalWidget(QWidget):
             need_password: Whether to prompt for password after username
         """
         self._screen.reset()
+        self._reset_scroll_position()
         self._prelogin_mode = True
         self._prelogin_buffer = ""
         self._prelogin_username = ""
@@ -703,6 +698,7 @@ class TerminalWidget(QWidget):
     def _show_cancelled_message(self) -> None:
         """Show cancelled message with reconnect option."""
         self._screen.reset()
+        self._reset_scroll_position()
         self._disconnected_mode = True
 
         msg_line1 = "Conexao cancelada"
@@ -799,6 +795,90 @@ class TerminalWidget(QWidget):
         """Set focus to the terminal."""
         self.setFocus()
 
+    # --- Scrollback helpers ---
+
+    def _reset_scroll_position(self) -> None:
+        """Return to the bottom of the buffer and clear scroll state."""
+        self._scroll_offset = 0
+        self._wheel_delta_remainder = 0
+        if self._selection_start is not None:
+            self.clear_selection()
+
+    def _get_total_line_count(self) -> int:
+        """Total lines stored (history + visible screen)."""
+        return len(self._screen.history.top) + self._rows
+
+    def _get_max_scroll_offset(self) -> int:
+        """Maximum scroll offset allowed based on history."""
+        return max(0, self._get_total_line_count() - self._rows)
+
+    def _get_visible_lines(self) -> list:
+        """Return the list of lines that should be rendered."""
+        history_lines = list(self._screen.history.top)
+        total_lines = len(history_lines) + self._rows
+        max_offset = max(0, total_lines - self._rows)
+        offset = min(self._scroll_offset, max_offset)
+        start_index = total_lines - self._rows - offset
+        start_index = max(0, start_index)
+
+        visible_lines = []
+        for idx in range(start_index, start_index + self._rows):
+            if idx < len(history_lines):
+                visible_lines.append(history_lines[idx])
+            else:
+                buffer_idx = idx - len(history_lines)
+                if 0 <= buffer_idx < self._rows:
+                    visible_lines.append(self._screen.buffer[buffer_idx])
+                else:
+                    visible_lines.append(self._screen.buffer[0])
+        return visible_lines
+
+    def _scroll_by_lines(self, lines: int) -> None:
+        """Scroll a number of lines in the scrollback buffer."""
+        if lines == 0:
+            return
+
+        max_offset = self._get_max_scroll_offset()
+        new_offset = max(0, min(max_offset, self._scroll_offset + lines))
+        if new_offset != self._scroll_offset:
+            self._scroll_offset = new_offset
+            if self._scroll_offset == 0:
+                self._wheel_delta_remainder = 0
+            if self._selection_start is not None:
+                self.clear_selection()
+            self._schedule_update()
+
+    def _build_highlight_map(self, visible_lines: list) -> dict:
+        """Build highlight information for the currently visible lines."""
+        highlight_map: dict[tuple[int, int], dict] = {}
+        for row_idx, line in enumerate(visible_lines):
+            line_chars = []
+            for col in range(self._cols):
+                char = line.get(col)
+                if not char:
+                    char = self._screen.default_char
+                line_chars.append(char.data if char.data else " ")
+
+            line_text = "".join(line_chars)
+            highlighted_positions = set()
+
+            for pat_info in HIGHLIGHT_PATTERNS:
+                for match in pat_info["pattern"].finditer(line_text):
+                    for pos in range(match.start(), min(match.end(), self._cols)):
+                        if pos in highlighted_positions:
+                            continue
+                        char = line.get(pos)
+                        if not char:
+                            char = self._screen.default_char
+                        if char and char.fg in ("default", None):
+                            highlight_map[(row_idx, pos)] = {
+                                "color": pat_info.get("color"),
+                                "underline": pat_info.get("underline", False),
+                            }
+                            highlighted_positions.add(pos)
+
+        return highlight_map
+
     # --- Text Selection (copy on select) ---
 
     def _pixel_to_cell(self, pos: QPoint) -> QPoint:
@@ -890,31 +970,32 @@ class TerminalWidget(QWidget):
             return ""
 
         lines = []
-        buffer = self._screen.buffer
+        visible_lines = self._get_visible_lines()
 
-        for row in range(start.y(), end.y() + 1):
-            if row >= len(buffer):
-                continue
-
-            line = buffer[row]
+        for row in range(start.y(), min(end.y() + 1, len(visible_lines))):
+            line = visible_lines[row]
             line_text = ""
 
             if start.y() == end.y():
                 # Single row selection
-                for col in range(start.x(), min(end.x() + 1, len(line))):
-                    line_text += line[col].data if line[col].data else " "
+                col_start = start.x()
+                col_end = end.x()
             elif row == start.y():
                 # First row
-                for col in range(start.x(), min(self._cols, len(line))):
-                    line_text += line[col].data if line[col].data else " "
+                col_start = start.x()
+                col_end = self._cols - 1
             elif row == end.y():
                 # Last row
-                for col in range(0, min(end.x() + 1, len(line))):
-                    line_text += line[col].data if line[col].data else " "
+                col_start = 0
+                col_end = end.x()
             else:
                 # Middle row - full line
-                for col in range(min(self._cols, len(line))):
-                    line_text += line[col].data if line[col].data else " "
+                col_start = 0
+                col_end = self._cols - 1
+
+            for col in range(col_start, min(col_end + 1, self._cols)):
+                char = line[col]
+                line_text += char.data if char.data else " "
 
             lines.append(line_text.rstrip())
 
@@ -953,7 +1034,15 @@ class TerminalWidget(QWidget):
                 self._zoom_out()
             event.accept()
         else:
-            # Pass to parent (no scroll in terminal for now)
+            delta = event.angleDelta().y()
+            if delta:
+                self._wheel_delta_remainder += delta
+                steps = int(self._wheel_delta_remainder / 120)
+                if steps != 0:
+                    self._wheel_delta_remainder -= steps * 120
+                    self._scroll_by_lines(steps * self._scroll_lines_per_notch)
+                    event.accept()
+                    return
             super().wheelEvent(event)
 
     def _zoom_in(self) -> None:
