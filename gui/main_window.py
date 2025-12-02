@@ -105,6 +105,12 @@ class MainWindow(QMainWindow):
         self._last_config: Optional[SSHConfig] = None  # For reconnection
         self._settings_manager = get_settings_manager()
         self._chat_position = self._settings_manager.get_chat_position()
+        self._splitter_sizes = {
+            "bottom": [700, 300],
+            "left": [300, 700],
+            "right": [700, 300],
+        }
+        self._applying_splitter_sizes = False
 
         # Pending connection data (used during pre-login)
         self._pending_connection: Optional[dict] = None
@@ -249,18 +255,23 @@ class MainWindow(QMainWindow):
             splitter.addWidget(self._chat_panel)
             splitter.setStretchFactor(0, 1)
             splitter.setStretchFactor(1, 0)
-
         splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(5)
         return splitter
 
     def _rebuild_terminal_chat_splitter(self) -> None:
         """Rebuild splitter when chat layout or orientation changes."""
         if hasattr(self, "_terminal_chat_splitter") and self._terminal_chat_splitter:
+            try:
+                self._terminal_chat_splitter.splitterMoved.disconnect(self._on_splitter_moved)
+            except (TypeError, RuntimeError):
+                pass
             self._terminal_chat_splitter.setParent(None)
 
         splitter = self._create_terminal_chat_splitter()
         self._terminal_chat_splitter = splitter
         self._content_layout.addWidget(splitter, 1)
+        splitter.splitterMoved.connect(self._on_splitter_moved)
         self._apply_chat_visibility()
 
     def _apply_chat_visibility(self) -> None:
@@ -273,25 +284,38 @@ class MainWindow(QMainWindow):
             self._chat_panel.setVisible(self._chat_visible)
 
         if not self._chat_visible:
-            if self._chat_position == "bottom":
-                self._terminal_chat_splitter.setSizes([1, 0])
-            elif self._chat_position == "left":
-                self._terminal_chat_splitter.setSizes([0, 1])
-            else:  # right
-                self._terminal_chat_splitter.setSizes([1, 0])
+            hide_sizes = [1, 0] if self._chat_position != "left" else [0, 1]
+            self._applying_splitter_sizes = True
+            self._terminal_chat_splitter.setSizes(hide_sizes)
+            self._applying_splitter_sizes = False
         else:
-            if self._chat_position == "bottom":
-                self._terminal_chat_splitter.setSizes([700, 300])
-            elif self._chat_position == "left":
-                self._terminal_chat_splitter.setSizes([300, 700])
-            else:  # right
-                self._terminal_chat_splitter.setSizes([700, 300])
+            sizes = self._splitter_sizes.get(self._chat_position)
+            if not sizes:
+                sizes = self._get_default_splitter_sizes(self._chat_position)
+            self._applying_splitter_sizes = True
+            self._terminal_chat_splitter.setSizes(sizes)
+            self._applying_splitter_sizes = False
 
         # Sync toolbar toggle state without re-triggering signals
         if hasattr(self, "_toggle_chat_btn"):
             blocked = self._toggle_chat_btn.blockSignals(True)
             self._toggle_chat_btn.setChecked(self._chat_visible)
             self._toggle_chat_btn.blockSignals(blocked)
+
+    def _get_default_splitter_sizes(self, position: str) -> list[int]:
+        """Default splitter sizes for each chat orientation."""
+        if position == "bottom":
+            return [700, 280]
+        if position == "left":
+            return [300, 700]
+        return [700, 300]
+
+    def _on_splitter_moved(self, pos: int, index: int) -> None:
+        """Store splitter sizes when user manually adjusts layout."""
+        if self._applying_splitter_sizes or not self._chat_visible:
+            return
+        if self._terminal_chat_splitter:
+            self._splitter_sizes[self._chat_position] = self._terminal_chat_splitter.sizes()
 
     def _apply_settings_changes(self) -> None:
         """Apply settings that might impact layout."""

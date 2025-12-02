@@ -5,6 +5,8 @@ Provides a chat interface for communicating with the AI agent.
 
 import logging
 from typing import Optional
+import html
+import re
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit,
@@ -47,51 +49,61 @@ class ChatInputField(QTextEdit):
 class MessageBubble(QFrame):
     """A message bubble for displaying chat messages."""
 
+    @staticmethod
+    def _to_markdown_safe(text: str) -> str:
+        """Escape HTML but preserve markdown syntax."""
+        return html.escape(text)
+
     def __init__(self, text: str, is_user: bool, parent: Optional[QWidget] = None):
         super().__init__(parent)
 
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setFrameShadow(QFrame.Shadow.Raised)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(10, 4, 10, 4)
+        layout.setSpacing(0)
 
         # Message label
-        label = QLabel(text)
+        label = QLabel()
         label.setWordWrap(True)
-        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-        label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+        label.setTextFormat(Qt.TextFormat.MarkdownText)
+        label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+            | Qt.TextInteractionFlag.TextSelectableByKeyboard
+            | Qt.TextInteractionFlag.LinksAccessibleByMouse
+        )
+        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        label.setText(self._to_markdown_safe(text))
+        label.setOpenExternalLinks(True)
 
         # Style based on sender
         if is_user:
             self.setStyleSheet("""
-                MessageBubble {
+                QFrame {
                     background-color: #0e639c;
                     border-radius: 8px;
-                    margin-left: 50px;
                 }
             """)
             label.setStyleSheet("""
-                QTextEdit {
+                QLabel {
                     background-color: transparent;
                     color: white;
-                    border: none;
                 }
             """)
         else:
             self.setStyleSheet("""
-                MessageBubble {
+                QFrame {
                     background-color: #3c3c3c;
                     border-radius: 8px;
-                    margin-right: 50px;
                 }
             """)
             label.setStyleSheet("""
-                QTextEdit {
+                QLabel {
                     background-color: transparent;
                     color: #dcdcdc;
-                    border: none;
                 }
             """)
 
@@ -195,7 +207,7 @@ class ChatWidget(QWidget):
         self._input_field.setFixedHeight(60)
         self._input_field.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self._input_field.enter_pressed.connect(self._on_send_clicked)
-        self._input_field.setViewportMargins(0, 0, 40, 0)
+        self._input_field.setViewportMargins(0, 0, 0, 0)
         input_layout.addWidget(self._input_field)
 
         # Unified action button (Send / Stop) placed inside input field
@@ -204,7 +216,7 @@ class ChatWidget(QWidget):
         self._action_btn.setIconSize(QSize(16, 16))
         self._action_btn.setAutoRaise(True)
         self._action_btn.clicked.connect(self._on_action_clicked)
-        self._action_btn.resize(28, 28)
+        self._action_btn.resize(26, 26)
         self._input_field.resized.connect(self._position_action_button)
         QTimer.singleShot(0, self._position_action_button)
 
@@ -282,11 +294,12 @@ class ChatWidget(QWidget):
         """Position the action button inside the input field."""
         if not hasattr(self, "_action_btn") or not self._action_btn:
             return
-        margin = 8
-        size = self._action_btn.height()
+        margin = 4
+        width = self._action_btn.width()
+        height = self._action_btn.height()
         viewport_rect = self._input_field.viewport().geometry()
-        x = viewport_rect.right() - size - margin + self._input_field.frameWidth()
-        y = viewport_rect.bottom() - size - margin + self._input_field.frameWidth()
+        x = viewport_rect.right() - width - margin + self._input_field.frameWidth()
+        y = viewport_rect.bottom() - height - margin + self._input_field.frameWidth()
         self._action_btn.move(x, y)
         self._action_btn.raise_()
 
@@ -298,12 +311,20 @@ class ChatWidget(QWidget):
             text: Message text
             is_user: True if message is from user, False if from AI
         """
+        # Normalize line endings and trim leading/trailing blanks
+        normalized = text.replace("\r\n", "\n")
+        if is_user:
+            normalized = normalized.strip()
+        else:
+            normalized = normalized.lstrip()
+
         # Remove the stretch at the end
         stretch_item = self._messages_layout.takeAt(self._messages_layout.count() - 1)
 
         # Add message bubble
-        bubble = MessageBubble(text, is_user)
-        self._messages_layout.addWidget(bubble)
+        bubble = MessageBubble(normalized, is_user)
+        alignment = Qt.AlignmentFlag.AlignRight if is_user else Qt.AlignmentFlag.AlignLeft
+        self._messages_layout.addWidget(bubble, alignment=alignment)
 
         # Re-add stretch
         self._messages_layout.addStretch()
