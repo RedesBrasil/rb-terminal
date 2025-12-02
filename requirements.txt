@@ -1,0 +1,27 @@
+# SSH AI Terminal - Dependencies
+# Etapa 1: Fundacao
+
+# GUI Framework
+PySide6>=6.6.0
+
+# SSH Client (async)
+asyncssh>=2.14.0
+
+# Async integration with Qt
+qasync>=0.27.0
+
+# Etapa 2: Agente IA
+
+# AI Agent Framework
+pydantic-ai>=0.0.20
+
+# HTTP Client for OpenRouter API
+httpx>=0.27.0
+
+# Etapa 3: Gerenciador de Hosts
+
+# Encryption for passwords (Fernet)
+cryptography>=41.0.0
+
+# Terminal emulator (VT100/xterm)
+pyte>=0.8.1
