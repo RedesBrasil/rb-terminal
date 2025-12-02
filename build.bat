@@ -1,8 +1,8 @@
 @echo off
-REM SSH AI Terminal - Windows Build Script
+REM RB Terminal - Windows Build Script
 REM Execute este script no Windows para gerar o .exe
 
-echo === SSH AI Terminal Build ===
+echo === RB Terminal Build ===
 echo.
 
 REM Verificar Python
@@ -33,6 +33,6 @@ if errorlevel 1 (
 
 echo.
 echo === BUILD CONCLUIDO ===
-echo Executavel gerado em: dist\SSH-AI-Terminal.exe
+echo Executavel gerado em: dist\RB-Terminal.exe
 echo.
 pause

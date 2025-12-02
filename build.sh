@@ -1,16 +1,16 @@
 #!/bin/bash
 # =============================================================================
-# SSH AI Terminal - Build Script
+# RB Terminal - Build Script
 # Compila o projeto para Windows (.exe) usando Docker
 # =============================================================================
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_NAME="SSH-AI-Terminal"
+PROJECT_NAME="RB-Terminal"
 DOCKER_IMAGE="batonogov/pyinstaller-windows:latest"
 
-echo "=== SSH AI Terminal - Build ==="
+echo "=== RB Terminal - Build ==="
 echo ""
 
 # Verificar se Docker está instalado

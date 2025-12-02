@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-SSH AI Terminal - Entry Point
+RB Terminal - Entry Point
 
 A desktop SSH terminal with AI integration.
 Uses PySide6 for GUI and asyncssh for SSH connections.
@@ -34,11 +34,11 @@ def main() -> int:
     """Main entry point."""
     setup_logging()
     logger = logging.getLogger(__name__)
-    logger.info("Starting SSH AI Terminal")
+    logger.info("Starting RB Terminal")
 
     # Create Qt application
     app = QApplication(sys.argv)
-    app.setApplicationName("SSH AI Terminal")
+    app.setApplicationName("RB Terminal")
     app.setApplicationVersion("0.1.0")
 
     # Enable high DPI scaling

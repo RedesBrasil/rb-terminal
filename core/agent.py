@@ -4,6 +4,7 @@ Provides tools for executing commands on remote hosts.
 """
 
 import asyncio
+import json
 import logging
 from typing import Optional, Callable, Any
 from dataclasses import dataclass
@@ -116,8 +117,8 @@ Você tem acesso à ferramenta execute_command para rodar comandos no terminal S
                 headers={
                     "Authorization": f"Bearer {self.api_key}",
                     "Content-Type": "application/json",
-                    "HTTP-Referer": "https://github.com/ssh-ai-terminal",
-                    "X-Title": "SSH AI Terminal"
+                    "HTTP-Referer": "https://github.com/rb-terminal",
+                    "X-Title": "RB Terminal"
                 },
                 timeout=60.0
             )
@@ -158,6 +159,12 @@ Você tem acesso à ferramenta execute_command para rodar comandos no terminal S
         if use_tools:
             payload["tools"] = self.TOOLS
             payload["tool_choice"] = "auto"
+            # Force OpenRouter to only use providers that support tool calling
+            # and enable fallback to other providers if one fails
+            payload["provider"] = {
+                "require_parameters": True,
+                "allow_fallbacks": True
+            }
 
         try:
             response = await self.http_client.post(

@@ -1,5 +1,5 @@
 """
-Settings Dialog for SSH AI Terminal.
+Settings Dialog for RB Terminal.
 Allows users to configure API key and other settings.
 Fetches available models from OpenRouter API.
 """
@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
     QPushButton, QGroupBox, QFormLayout, QMessageBox, QListWidget,
     QListWidgetItem, QApplication
 )
-from PySide6.QtCore import Qt, QThread, Signal
+from PySide6.QtCore import Qt, QThread, Signal, QEvent
 
 from core.settings import get_settings_manager
 
@@ -71,7 +71,7 @@ class SettingsDialog(QDialog):
         """Setup the dialog UI."""
         self.setWindowTitle("Configuracoes")
         self.setMinimumWidth(600)
-        self.setMinimumHeight(500)
+        self.setMinimumHeight(200)
         self.setModal(True)
 
         layout = QVBoxLayout(self)
@@ -95,27 +95,25 @@ class SettingsDialog(QDialog):
         api_key_row.addWidget(self._toggle_key_btn)
         api_layout.addRow("API Key:", api_key_row)
 
-        # Model search
+        # Model search (shows selected model, click to open list)
         self._model_search = QLineEdit()
-        self._model_search.setPlaceholderText("Pesquisar modelo... (ex: gpt-4, claude, gemini)")
+        self._model_search.setPlaceholderText("Clique para selecionar modelo...")
         self._model_search.textChanged.connect(self._filter_models)
+        self._model_search.installEventFilter(self)
         api_layout.addRow("Modelo:", self._model_search)
 
-        # Model list
+        # Model list (hidden by default)
         self._model_list = QListWidget()
-        self._model_list.setMinimumHeight(200)
-        self._model_list.itemClicked.connect(self._on_model_selected)
-        self._model_list.itemDoubleClicked.connect(self._on_model_double_clicked)
+        self._model_list.setMinimumHeight(250)
+        self._model_list.setMaximumHeight(250)
+        self._model_list.itemClicked.connect(self._on_model_clicked)
+        self._model_list.hide()  # Hidden by default
         api_layout.addRow("", self._model_list)
 
-        # Selected model display
-        self._selected_model_label = QLabel("")
-        self._selected_model_label.setStyleSheet("color: #3794ff; font-style: italic;")
-        api_layout.addRow("Selecionado:", self._selected_model_label)
-
-        # Status label for loading
+        # Status label for loading (hidden by default)
         self._status_label = QLabel("Carregando modelos...")
         self._status_label.setStyleSheet("color: #888888;")
+        self._status_label.hide()
         api_layout.addRow("", self._status_label)
 
         # Link to OpenRouter
@@ -227,42 +225,63 @@ class SettingsDialog(QDialog):
         self._all_models = models
         self._status_label.setText(f"{len(models)} modelos disponiveis")
         self._status_label.setStyleSheet("color: #4ec9b0;")
-        self._filter_models()
-
-        # Select current model if exists
-        current_model = self._settings_manager.get_model()
-        self._select_model_by_id(current_model)
 
     def _on_fetch_error(self, error: str) -> None:
         """Handle error fetching models."""
-        self._status_label.setText(error)
+        self._status_label.setText("Erro ao carregar modelos. Verifique sua conexao ou API Key.")
         self._status_label.setStyleSheet("color: #f14c4c;")
+        self._all_models = []
 
-        # Add fallback models
-        self._all_models = [
-            ("Google: Gemini 2.5 Flash", "google/gemini-2.5-flash"),
-            ("Google: Gemini 2.5 Pro", "google/gemini-2.5-pro-preview"),
-            ("Anthropic: Claude Sonnet 4", "anthropic/claude-sonnet-4"),
-            ("Anthropic: Claude 3.5 Sonnet", "anthropic/claude-3.5-sonnet"),
-            ("OpenAI: GPT-4o", "openai/gpt-4o"),
-            ("OpenAI: GPT-4o Mini", "openai/gpt-4o-mini"),
-            ("DeepSeek: Chat V3", "deepseek/deepseek-chat-v3-0324"),
-        ]
+    def eventFilter(self, obj, event) -> bool:
+        """Event filter to show model list when clicking on search field."""
+        if obj == self._model_search:
+            if event.type() == QEvent.Type.FocusIn:
+                self._show_model_list()
+        return super().eventFilter(obj, event)
+
+    def _show_model_list(self) -> None:
+        """Show the model list and populate it."""
+        # Save current selection to show in placeholder
+        current_model = self._model_search.property("model_id") or ""
+
+        # Clear the search field for fresh search
+        self._model_search.blockSignals(True)
+        self._model_search.clear()
+        if current_model:
+            self._model_search.setPlaceholderText(f"Atual: {current_model} - Digite para filtrar...")
+        else:
+            self._model_search.setPlaceholderText("Digite para filtrar modelos...")
+        self._model_search.blockSignals(False)
+
+        self._model_list.show()
+        self._status_label.show()
         self._filter_models()
 
-        # Select current model
-        current_model = self._settings_manager.get_model()
-        self._select_model_by_id(current_model)
+        # Resize dialog to fit list
+        self.adjustSize()
+
+    def _hide_model_list(self) -> None:
+        """Hide the model list."""
+        self._model_list.hide()
+        self._status_label.hide()
+        self._model_search.setPlaceholderText("Clique para selecionar modelo...")
+
+        # Resize dialog to compact size
+        self.adjustSize()
 
     def _filter_models(self) -> None:
         """Filter models based on search text."""
+        # Only filter if list is visible
+        if not self._model_list.isVisible():
+            return
+
         search_text = self._model_search.text().lower().strip()
 
         self._model_list.clear()
 
         for name, model_id in self._all_models:
             # Search in both name and id
-            if search_text in name.lower() or search_text in model_id.lower():
+            if not search_text or search_text in name.lower() or search_text in model_id.lower():
                 item = QListWidgetItem(f"{name}")
                 item.setData(Qt.ItemDataRole.UserRole, model_id)
                 item.setToolTip(model_id)
@@ -276,33 +295,20 @@ class SettingsDialog(QDialog):
         elif total_count > 0:
             self._status_label.setText(f"{total_count} modelos disponiveis")
 
-    def _select_model_by_id(self, model_id: str) -> None:
-        """Select a model in the list by its ID."""
-        for i in range(self._model_list.count()):
-            item = self._model_list.item(i)
-            if item.data(Qt.ItemDataRole.UserRole) == model_id:
-                self._model_list.setCurrentItem(item)
-                self._update_selected_label(item)
-                return
-
-        # Model not found in filtered list, just show it
-        if model_id:
-            self._selected_model_label.setText(model_id)
-
-    def _on_model_selected(self, item: QListWidgetItem) -> None:
-        """Handle model selection."""
-        self._update_selected_label(item)
-
-    def _on_model_double_clicked(self, item: QListWidgetItem) -> None:
-        """Handle double click - select and clear search."""
-        self._update_selected_label(item)
-        self._model_search.clear()
-
-    def _update_selected_label(self, item: QListWidgetItem) -> None:
-        """Update the selected model label."""
+    def _on_model_clicked(self, item: QListWidgetItem) -> None:
+        """Handle model click - select and hide list."""
         model_id = item.data(Qt.ItemDataRole.UserRole)
         name = item.text()
-        self._selected_model_label.setText(f"{name} ({model_id})")
+
+        # Set the selected model in the search field
+        self._model_search.setText(f"{name}")
+        self._model_search.setProperty("model_id", model_id)
+
+        # Hide the list
+        self._hide_model_list()
+
+        # Move focus away from search field
+        self._api_key_edit.setFocus()
 
     def _load_current_settings(self) -> None:
         """Load current settings into the form."""
@@ -311,9 +317,10 @@ class SettingsDialog(QDialog):
         # API Key
         self._api_key_edit.setText(settings.openrouter_api_key)
 
-        # Model will be selected after models are fetched
+        # Model - show current model ID in search field
         current_model = settings.default_model
-        self._selected_model_label.setText(current_model)
+        self._model_search.setText(current_model)
+        self._model_search.setProperty("model_id", current_model)
 
     def _toggle_api_key_visibility(self) -> None:
         """Toggle API key visibility."""
@@ -326,16 +333,14 @@ class SettingsDialog(QDialog):
 
     def _get_selected_model_id(self) -> Optional[str]:
         """Get the selected model ID."""
-        current_item = self._model_list.currentItem()
-        if current_item:
-            return current_item.data(Qt.ItemDataRole.UserRole)
+        # Get from property (set when user selects from list)
+        model_id = self._model_search.property("model_id")
+        if model_id:
+            return model_id
 
-        # If no item selected, try to get from label (fallback)
-        label_text = self._selected_model_label.text()
-        if "(" in label_text and ")" in label_text:
-            # Extract ID from "Name (id)" format
-            return label_text.split("(")[-1].rstrip(")")
-        return label_text if label_text else None
+        # Fallback to text (if user typed manually)
+        text = self._model_search.text().strip()
+        return text if text else None
 
     def _on_save(self) -> None:
         """Save settings."""

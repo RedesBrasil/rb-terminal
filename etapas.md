@@ -97,12 +97,12 @@ httpx>=0.27.0
 
 ### Configuração OpenRouter:
 - **Modelo:** `google/gemini-2.5-flash`
-- **API Key:** `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`
+- **API Key:** Configurar via Settings no app
 
 ### Exemplo de uso (curl):
 ```bash
 curl -s "https://openrouter.ai/api/v1/chat/completions" \
-  -H "Authorization: Bearer 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" \
+  -H "Authorization: Bearer $OPENROUTER_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
     "model": "google/gemini-2.5-flash",

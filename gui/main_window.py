@@ -1,5 +1,5 @@
 """
-Main Window for SSH AI Terminal.
+Main Window for RB Terminal.
 Contains collapsible hosts sidebar, terminal widget, and bottom AI chat panel.
 """
 
@@ -125,7 +125,7 @@ class MainWindow(QMainWindow):
 
     def _setup_ui(self) -> None:
         """Setup the main window UI."""
-        self.setWindowTitle("SSH AI Terminal")
+        self.setWindowTitle("RB Terminal")
         self.setMinimumSize(1000, 600)
         self.resize(1280, 768)
 
@@ -260,8 +260,8 @@ class MainWindow(QMainWindow):
         self._toggle_chat_btn = QAction("Chat IA", self)
         self._toggle_chat_btn.setCheckable(True)
         self._toggle_chat_btn.setChecked(False)
-        self._toggle_chat_btn.setToolTip("Mostrar/Esconder chat IA (Ctrl+J)")
-        self._toggle_chat_btn.setShortcut("Ctrl+J")
+        self._toggle_chat_btn.setToolTip("Mostrar/Esconder chat IA (Ctrl+I)")
+        self._toggle_chat_btn.setShortcut("Ctrl+I")
         self._toggle_chat_btn.triggered.connect(self._on_toggle_chat)
         toolbar.addAction(self._toggle_chat_btn)
 

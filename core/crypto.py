@@ -116,14 +116,14 @@ def get_config_dir() -> Path:
     Get the application configuration directory.
 
     Returns:
-        Path to ~/.ssh-ai-terminal/
+        Path to ~/.rb-terminal/
     """
     if os.name == 'nt':
         # Windows: use APPDATA or USERPROFILE
         base = os.environ.get('APPDATA') or os.environ.get('USERPROFILE', '')
-        config_dir = Path(base) / '.ssh-ai-terminal'
+        config_dir = Path(base) / '.rb-terminal'
     else:
         # Linux/Mac: use HOME
-        config_dir = Path.home() / '.ssh-ai-terminal'
+        config_dir = Path.home() / '.rb-terminal'
 
     return config_dir

@@ -10,20 +10,11 @@ pip install -r requirements.txt
 
 ## Configuration
 
-Copy the example file and add your API key:
+On first run, click the **Config** button in the toolbar to configure:
+- **API Key:** Your OpenRouter key
+- **Model:** Select from the list of available models
 
-```bash
-cp config/settings.example.json config/settings.json
-```
-
-Edit `config/settings.json`:
-```json
-{
-  "openrouter_api_key": "your-openrouter-key",
-  "default_model": "google/gemini-2.5-flash",
-  "theme": "dark"
-}
-```
+Settings are saved to `%APPDATA%\.rb-terminal\settings.json`
 
 ## Usage
 
@@ -39,7 +30,15 @@ python main.py
 | `Ctrl+J` | Toggle AI chat |
 | `Ctrl+N` | Quick connect |
 | `Ctrl+D` | Disconnect |
-| `R` | Reconnect |
+| `R` | Reconnect (when disconnected) |
+| `Ctrl+V` | Paste in terminal |
+| `Shift+Insert` | Paste in terminal |
+| `Right-click` | Paste in terminal |
+| `Ctrl+Scroll` | Zoom (increase/decrease font) |
+| `Ctrl++` / `Ctrl+-` | Zoom |
+| `Ctrl+0` | Reset zoom |
+
+**Text selection:** Selecting text with the mouse automatically copies to clipboard (PuTTY-style).
 
 ## Stack
 

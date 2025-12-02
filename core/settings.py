@@ -66,7 +66,7 @@ class SettingsManager:
         """Load settings from file."""
         settings_data = {}
 
-        # Priority 1: User config directory (%APPDATA%\.ssh-ai-terminal\settings.json)
+        # Priority 1: User config directory (%APPDATA%\.rb-terminal\settings.json)
         if self._settings_file.exists():
             try:
                 with open(self._settings_file, "r", encoding="utf-8") as f:

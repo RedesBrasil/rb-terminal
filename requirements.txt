@@ -1,4 +1,4 @@
-# SSH AI Terminal - Dependencies
+# RB Terminal - Dependencies
 # Etapa 1: Fundacao
 
 # GUI Framework

@@ -1,4 +1,4 @@
-# SSH AI Terminal
+# RB Terminal
 
 Terminal SSH desktop com agente IA integrado. A IA executa comandos no dispositivo remoto, le saidas, raciocina e continua iterando ate completar a tarefa - similar ao Claude Code, mas para administracao de redes/servidores.
 
@@ -18,30 +18,33 @@ Terminal SSH desktop com agente IA integrado. A IA executa comandos no dispositi
 ## Estrutura do Projeto
 
 ```
-ssh-ai-terminal/
+rb-terminal/
 ├── main.py                     # Entry point
 ├── core/
 │   ├── agent.py                # Agente IA com OpenRouter API
 │   ├── ssh_session.py          # Wrapper asyncssh (conexao SSH)
 │   ├── hosts.py                # CRUD hosts (modelo + persistencia JSON)
 │   ├── crypto.py               # Criptografia de senhas (Fernet)
+│   ├── settings.py             # Gerenciador de configuracoes (singleton)
 │   └── device_types.py         # Gerenciador de tipos de dispositivos
 ├── gui/
 │   ├── main_window.py          # Janela principal com sidebar + terminal + chat
 │   ├── terminal_widget.py      # Widget terminal com suporte ANSI
 │   ├── chat_widget.py          # Widget chat IA
-│   └── hosts_dialog.py         # Dialogs: HostDialog, PasswordPromptDialog, QuickConnectDialog
+│   ├── hosts_dialog.py         # Dialogs: HostDialog, PasswordPromptDialog, QuickConnectDialog
+│   └── settings_dialog.py      # Dialog de configuracoes (API key, modelo LLM)
 ├── config/
-│   └── settings.json           # API key OpenRouter, modelo padrao
+│   └── settings.json           # API key OpenRouter, modelo padrao (fallback)
 └── requirements.txt
 ```
 
 ## Arquivos de Dados
 
-Salvos em `~/.ssh-ai-terminal/` (ou `%APPDATA%` no Windows):
+Salvos em `~/.rb-terminal/` (ou `%APPDATA%\.rb-terminal` no Windows):
 
 - `hosts.json` - Lista de hosts salvos com senhas criptografadas
 - `device_types.json` - Tipos de dispositivos customizados
+- `settings.json` - Configuracoes do usuario (API key, modelo padrao)
 - `.key` - Chave Fernet para criptografia
 
 ## Componentes Principais
@@ -77,6 +80,36 @@ A IA recebe contexto do tipo de dispositivo conectado:
 - `Huawei` -> Comandos Huawei CLI
 - `Cisco` -> Comandos Cisco IOS
 - Tipos customizados -> Mensagem generica
+
+### core/settings.py
+
+Gerenciador centralizado de configuracoes com persistencia.
+
+```python
+from core.settings import get_settings_manager
+
+# Singleton - mesma instancia em toda aplicacao
+manager = get_settings_manager()
+
+# Ler configuracoes
+api_key = manager.get_api_key()
+model = manager.get_model()
+
+# Alterar configuracoes
+manager.set_api_key("sk-or-v1-...")
+manager.set_model("anthropic/claude-3-opus")
+
+# Salvar para disco
+manager.save()
+
+# Recarregar do disco
+manager.reload()
+```
+
+**Prioridade de carregamento:**
+1. `%APPDATA%\.rb-terminal\settings.json` (usuario)
+2. Bundled config (PyInstaller)
+3. `config/settings.json` (desenvolvimento)
 
 ### core/hosts.py
 
@@ -152,12 +185,12 @@ await session.disconnect()
 Janela principal com:
 - Sidebar colapsavel com lista de hosts
 - Terminal SSH central
-- Chat IA no rodape (toggle com Ctrl+J)
-- Toolbar com acoes
+- Chat IA no rodape (toggle com Ctrl+I)
+- Toolbar com acoes (Config, Conexao Rapida)
 
 **Atalhos:**
 - `Ctrl+H` - Toggle sidebar hosts
-- `Ctrl+J` - Toggle chat IA
+- `Ctrl+I` - Toggle chat IA
 - `Ctrl+N` - Conexao rapida
 - `Ctrl+D` - Desconectar
 - `R` - Reconectar (quando desconectado)
@@ -166,8 +199,7 @@ Janela principal com:
 - Quando conexao e perdida (exit, timeout, etc), pressionar `R` reconecta ao mesmo host
 - Ultima config de conexao e salva em `_last_config`
 - Signal `_unexpected_disconnect` notifica desconexao via Qt signal (thread-safe)
-- Desconexao manual (botao) limpa `_last_config`, nao permite reconectar com R
-- **TODO:** Mostrar mensagem visual no terminal informando sobre o R (tentativa atual nao funcionou devido a timing de eventos Qt)
+- Desconexao manual limpa `_last_config`, nao permite reconectar com R
 
 ### gui/terminal_widget.py
 
@@ -177,10 +209,40 @@ Widget de terminal com emulacao VT100/xterm via pyte.
 - `input_entered(str)` - Emitido quando usuario digita
 - `reconnect_requested()` - Emitido quando usuario pressiona R no modo desconectado
 
+**Selecao e Clipboard (estilo PuTTY):**
+- Selecionar texto com mouse copia automaticamente para clipboard
+- Colar com `Ctrl+V`, `Shift+Insert`, ou clique direito do mouse
+
+**Zoom:**
+- `Ctrl+Scroll` - Aumentar/diminuir fonte
+- `Ctrl++` / `Ctrl+-` - Aumentar/diminuir fonte
+- `Ctrl+0` - Resetar zoom para tamanho padrao
+- Range de fonte: 6-32pt
+
 **Modo desconectado:**
 - `_disconnected_mode` flag ativa modo especial
 - `show_disconnected_message()` limpa terminal e mostra mensagem centralizada
 - No modo desconectado, apenas tecla R e capturada
+
+### gui/settings_dialog.py
+
+Dialog para configurar API key e modelo LLM.
+
+```python
+from gui.settings_dialog import SettingsDialog
+
+dialog = SettingsDialog(parent)
+if dialog.exec() == QDialog.Accepted:
+    # Configuracoes salvas automaticamente
+    pass
+```
+
+**Funcionalidades:**
+- Campo API Key com toggle mostrar/esconder
+- Lista de modelos buscada da API OpenRouter em tempo real
+- Campo de busca para filtrar modelos (por nome ou ID)
+- Lista aparece ao clicar no campo, esconde apos selecionar
+- Salva em `%APPDATA%\.rb-terminal\settings.json`
 
 ### gui/hosts_dialog.py
 
@@ -228,7 +290,7 @@ Tres dialogs:
    - Se tem credenciais salvas -> conecta automaticamente
    - Se nao tem -> terminal pede usuario/senha (estilo PuTTY)
 3. Se conexao cair -> terminal mostra "Pressione R para reconectar"
-4. Usa terminal normalmente OU abre chat IA (Ctrl+J)
+4. Usa terminal normalmente OU abre chat IA (Ctrl+I)
 5. No chat: "Mostre o uso de CPU" -> IA executa comandos apropriados
 6. Usuario ve comandos executados no terminal em tempo real
 7. IA responde com analise apos completar
@@ -247,6 +309,7 @@ Principais dependencias:
 - qasync (Qt + asyncio)
 - httpx
 - cryptography
+- pyte
 
 ### Executar
 

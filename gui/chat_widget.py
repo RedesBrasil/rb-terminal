@@ -8,13 +8,35 @@ from typing import Optional
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit,
-    QLineEdit, QPushButton, QLabel, QScrollArea,
+    QPushButton, QLabel, QScrollArea,
     QFrame, QSizePolicy
 )
-from PySide6.QtCore import Qt, Signal, Slot, QTimer
-from PySide6.QtGui import QFont, QColor, QPalette, QTextCursor
+from PySide6.QtCore import Qt, Signal, Slot, QTimer, QEvent
+from PySide6.QtGui import QFont, QColor, QPalette, QTextCursor, QKeyEvent
 
 logger = logging.getLogger(__name__)
+
+
+class ChatInputField(QTextEdit):
+    """Custom text input that sends on Enter and allows Shift+Enter for newlines."""
+
+    enter_pressed = Signal()
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setAcceptRichText(False)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        """Handle key press - Enter sends, Shift+Enter adds newline."""
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if event.modifiers() & Qt.KeyboardModifier.ShiftModifier:
+                # Shift+Enter: add newline
+                super().keyPressEvent(event)
+            else:
+                # Enter: send message
+                self.enter_pressed.emit()
+        else:
+            super().keyPressEvent(event)
 
 
 class MessageBubble(QFrame):
@@ -157,21 +179,24 @@ class ChatWidget(QWidget):
         input_layout = QHBoxLayout()
         input_layout.setSpacing(4)
 
-        self._input_field = QLineEdit()
+        self._input_field = ChatInputField()
         self._input_field.setPlaceholderText("Digite sua mensagem...")
         self._input_field.setStyleSheet("""
-            QLineEdit {
+            QTextEdit {
                 background-color: #3c3c3c;
                 border: 1px solid #555555;
                 border-radius: 4px;
                 padding: 8px;
                 color: #dcdcdc;
             }
-            QLineEdit:focus {
+            QTextEdit:focus {
                 border: 1px solid #007acc;
             }
         """)
-        self._input_field.returnPressed.connect(self._on_send_clicked)
+        # Set fixed height for 3 lines (approx 60px)
+        self._input_field.setFixedHeight(60)
+        self._input_field.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._input_field.enter_pressed.connect(self._on_send_clicked)
         input_layout.addWidget(self._input_field)
 
         # Send button
@@ -230,7 +255,7 @@ class ChatWidget(QWidget):
     @Slot()
     def _on_send_clicked(self) -> None:
         """Handle send button click."""
-        message = self._input_field.text().strip()
+        message = self._input_field.toPlainText().strip()
         if message and not self._is_processing:
             self._input_field.clear()
             self.add_message(message, is_user=True)
@@ -287,12 +312,14 @@ class ChatWidget(QWidget):
         self._is_processing = processing
         self._send_btn.setEnabled(not processing)
         self._stop_btn.setEnabled(processing)
-        self._input_field.setEnabled(not processing)
+        # Don't disable input field - only the send button is disabled
 
         if processing:
             self.set_status("IA pensando...")
         else:
             self.set_status("Pronto")
+            # Focus back to input field after AI response
+            self._input_field.setFocus()
 
     def clear_messages(self) -> None:
         """Clear all messages from chat."""
@@ -309,7 +336,7 @@ class ChatWidget(QWidget):
         Args:
             enabled: True to enable, False to disable
         """
-        self._input_field.setEnabled(enabled and not self._is_processing)
+        self._input_field.setEnabled(enabled)
         self._send_btn.setEnabled(enabled and not self._is_processing)
 
         if not enabled:
