@@ -1,5 +1,7 @@
 # RB Terminal
 
+> [English version](README.en.md)
+
 Terminal SSH com agente IA integrado. A IA executa comandos, analisa saídas e itera até completar a tarefa.
 
 ## Instalação
