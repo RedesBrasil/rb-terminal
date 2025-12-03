@@ -10,7 +10,7 @@ Terminal SSH desktop com agente IA integrado. A IA executa comandos no dispositi
 | GUI             | PySide6                 |
 | LLM Provider    | OpenRouter              |
 | SSH             | asyncssh                |
-| Terminal Type   | xterm (fallback: vt100) |
+| Terminal Type   | xterm (default), xterm-256color, vt100 |
 | Criptografia    | cryptography (Fernet)   |
 | Persistencia    | JSON local              |
 | Build           | PyInstaller             |
@@ -19,7 +19,7 @@ Terminal SSH desktop com agente IA integrado. A IA executa comandos no dispositi
 
 ```
 rb-terminal/
-├── main.py                     # Entry point
+├── main.py                     # Entry point (suporta --debug para logs detalhados)
 ├── core/
 │   ├── agent.py                # Agente IA com OpenRouter API
 │   ├── ssh_session.py          # Wrapper asyncssh (conexao SSH)
@@ -48,6 +48,30 @@ Salvos em `~/.rb-terminal/` (ou `%APPDATA%\.rb-terminal` no Windows):
 - `.key` - Chave Fernet para criptografia
 
 ## Componentes Principais
+
+### main.py
+
+Entry point da aplicacao com suporte a argumentos de linha de comando.
+
+**Argumentos:**
+- `--debug`: Ativa modo debug com logs detalhados (DEBUG level)
+- Sem argumentos: Modo normal com logs INFO
+
+**Exemplo de uso:**
+```bash
+# Modo normal
+python main.py
+
+# Modo debug (troubleshooting)
+python main.py --debug
+```
+
+**Funcionalidades:**
+- Configura logging (INFO ou DEBUG)
+- Inicializa QApplication (Qt)
+- Cria event loop integrado Qt + asyncio (qasync)
+- Instancia MainWindow
+- Trata KeyboardInterrupt gracefully
 
 ### core/agent.py
 
@@ -124,13 +148,14 @@ class Host:
     port: int = 22
     username: str = ""
     password_encrypted: Optional[str] = None
-    terminal_type: str = "xterm"      # xterm-256color, xterm ou vt100
+    terminal_type: str = "xterm"      # Default: xterm. Opcoes: xterm-256color, vt100
     device_type: Optional[str] = None  # Linux, MikroTik, Huawei, Cisco, ou custom
-    disable_terminal_detection: bool = False  # Adiciona +ct ao username para MikroTik
+    disable_terminal_detection: bool = False  # Deprecated - sempre False para novos hosts
     created_at: str
 
     def get_effective_username(self) -> str:
         # Retorna username com sufixo +ct se disable_terminal_detection=True
+        # Nota: Este campo e mantido apenas para retrocompatibilidade
 ```
 
 ### core/device_types.py
@@ -261,6 +286,16 @@ Tres dialogs:
 - `PasswordPromptDialog` - Pedir senha ao conectar
 - `QuickConnectDialog` - Conexao rapida sem salvar
 
+**Campos principais (sempre visiveis):**
+- Nome, Host/IP, Porta, Usuario, Senha, Tipo Dispositivo
+
+**Opcoes Avancadas (secao colapsavel):**
+- Tipo Terminal (default: `xterm`, opcoes: `xterm-256color`, `vt100`)
+- Toggle com botao "▶ Opcoes Avancadas" / "▼ Opcoes Avancadas"
+
+**Campo removido:**
+- "Desabilitar deteccao de terminal" - nao e mais necessario, a deteccao automatica de cores MikroTik funciona via `_respond_to_terminal_queries_async()` em [ssh_session.py](core/ssh_session.py)
+
 ## Configuracao
 
 ### config/settings.json
@@ -285,7 +320,7 @@ Tres dialogs:
       "port": 22,
       "username": "admin",
       "password_encrypted": "gAAAAA...",
-      "terminal_type": "xterm-256color",
+      "terminal_type": "xterm",
       "device_type": "MikroTik",
       "disable_terminal_detection": false,
       "created_at": "2025-01-15T10:00:00"
@@ -293,6 +328,10 @@ Tres dialogs:
   ]
 }
 ```
+
+**Notas:**
+- `terminal_type` default e `xterm` (mais compativel). Use `xterm-256color` para cores avancadas ou `vt100` para dispositivos muito antigos.
+- `disable_terminal_detection` e deprecated, sempre `false` para novos hosts (mantido apenas para retrocompatibilidade).
 
 ## Fluxo do Usuario
 
@@ -324,15 +363,80 @@ Principais dependencias:
 
 ### Executar
 
+**Modo normal (logs INFO):**
 ```bash
 python main.py
 ```
+
+**Modo debug (logs DEBUG detalhados):**
+```bash
+python main.py --debug
+```
+
+O modo debug exibe logs detalhados de todas as operações, incluindo:
+- Chamadas HTTP para API OpenRouter
+- Detalhes de conexões SSH
+- Parsing de terminal queries
+- Erros e stack traces completos
 
 ### Build Windows
 
 ```bash
 pyinstaller --onefile --windowed main.py
 ```
+
+## Debugging e Troubleshooting
+
+### Modo Debug
+
+Para diagnosticar problemas, rode a aplicacao com o parametro `--debug`:
+
+```bash
+python main.py --debug
+```
+
+Isso ativa logs DEBUG detalhados de:
+- **Conexoes SSH**: handshake, auth, canais
+- **Terminal queries**: respostas automaticas para MikroTik (DA1, DA2, cursor position)
+- **API calls**: requisicoes e respostas da OpenRouter API
+- **Agente IA**: execucao de comandos, tool calls, thinking
+- **asyncio**: eventos de event loop (proactor, workers)
+
+### Logs Importantes
+
+**Conexao SSH bem-sucedida:**
+```
+core.ssh_session - INFO - Connecting to 192.168.1.1:22
+core.ssh_session - INFO - SSH connection established (terminal: xterm)
+core.ssh_session - INFO - Proactive terminal response enabled (for MikroTik colors)
+```
+
+**Deteccao automatica de cores MikroTik (DEBUG):**
+```
+core.ssh_session - DEBUG - CursorTracker: Query ESC[6n -> Response b'\x1b[53;1R'
+core.ssh_session - DEBUG - Proactive response: DA1 -> VT220
+```
+
+**Erro de API OpenRouter:**
+```
+core.agent - ERROR - API request failed: 401 Unauthorized
+```
+
+### Problemas Comuns
+
+**1. Cores nao aparecem em MikroTik**
+- Verifique nos logs DEBUG se `Proactive terminal response enabled` aparece
+- O sistema responde automaticamente a terminal queries (DA1, DA2)
+- Nao e mais necessario usar `disable_terminal_detection` (deprecated)
+
+**2. IA nao executa comandos**
+- Rode com `--debug` e verifique logs de `core.agent`
+- Verifique se API key esta configurada corretamente
+- Confirme que o modelo suporta tool calling (ex: Claude, Gemini 2.0+)
+
+**3. Desconexao inesperada SSH**
+- Verifique logs: `ConnectionLost`, `BrokenPipeError`, `EOF`
+- Pressione `R` para reconectar automaticamente
 
 ## Funcionalidades Pendentes (v2)
 

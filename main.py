@@ -9,6 +9,7 @@ Uses PySide6 for GUI and asyncssh for SSH connections.
 import sys
 import asyncio
 import logging
+import argparse
 from pathlib import Path
 
 from PySide6.QtWidgets import QApplication
@@ -18,11 +19,17 @@ import qasync
 from gui.main_window import MainWindow
 
 
-def setup_logging() -> None:
-    """Configure logging for the application."""
+def setup_logging(debug: bool = False) -> None:
+    """Configure logging for the application.
+
+    Args:
+        debug: If True, set log level to DEBUG. Otherwise, use INFO.
+    """
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    log_level = logging.DEBUG if debug else logging.INFO
+
     logging.basicConfig(
-        level=logging.DEBUG,  # Changed to DEBUG for troubleshooting
+        level=log_level,
         format=log_format,
         handlers=[
             logging.StreamHandler(sys.stdout)
@@ -32,9 +39,24 @@ def setup_logging() -> None:
 
 def main() -> int:
     """Main entry point."""
-    setup_logging()
+    # Parse command line arguments
+    parser = argparse.ArgumentParser(
+        description="RB Terminal - SSH Terminal with AI Integration"
+    )
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug logging (verbose output)"
+    )
+    args = parser.parse_args()
+
+    setup_logging(debug=args.debug)
     logger = logging.getLogger(__name__)
-    logger.info("Starting RB Terminal")
+
+    if args.debug:
+        logger.info("Starting RB Terminal (DEBUG MODE)")
+    else:
+        logger.info("Starting RB Terminal")
 
     # Create Qt application
     app = QApplication(sys.argv)
