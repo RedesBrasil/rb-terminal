@@ -29,6 +29,7 @@ class Host:
     device_type: Optional[str] = None
     disable_terminal_detection: bool = False  # Adds +ct suffix for MikroTik
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    tags: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
@@ -60,7 +61,8 @@ class Host:
             terminal_type=data.get("terminal_type", "xterm"),
             device_type=data.get("device_type"),
             disable_terminal_detection=data.get("disable_terminal_detection", False),
-            created_at=data.get("created_at", datetime.now().isoformat())
+            created_at=data.get("created_at", datetime.now().isoformat()),
+            tags=data.get("tags", [])
         )
 
 
@@ -132,7 +134,8 @@ class HostsManager:
         password: Optional[str] = None,
         terminal_type: str = "xterm",
         device_type: Optional[str] = None,
-        disable_terminal_detection: bool = False
+        disable_terminal_detection: bool = False,
+        tags: Optional[list] = None
     ) -> Host:
         """
         Add a new host.
@@ -146,6 +149,7 @@ class HostsManager:
             terminal_type: Terminal type (xterm or vt100)
             device_type: Type of device (Linux, MikroTik, Huawei, Cisco, or custom)
             disable_terminal_detection: If True, adds +ct suffix for MikroTik
+            tags: List of tags for the host
 
         Returns:
             The created Host object
@@ -162,7 +166,8 @@ class HostsManager:
             password_encrypted=password_encrypted,
             terminal_type=terminal_type,
             device_type=device_type if device_type else None,
-            disable_terminal_detection=disable_terminal_detection
+            disable_terminal_detection=disable_terminal_detection,
+            tags=tags if tags else []
         )
 
         self._hosts.append(new_host)
@@ -181,7 +186,8 @@ class HostsManager:
         terminal_type: Optional[str] = None,
         device_type: Optional[str] = None,
         disable_terminal_detection: Optional[bool] = None,
-        clear_password: bool = False
+        clear_password: bool = False,
+        tags: Optional[list] = None
     ) -> Optional[Host]:
         """
         Update an existing host.
@@ -197,6 +203,7 @@ class HostsManager:
             device_type: New device type (None = keep current)
             disable_terminal_detection: If True, adds +ct suffix for MikroTik
             clear_password: If True, remove saved password
+            tags: New tags list (None = keep current)
 
         Returns:
             Updated Host object or None if not found
@@ -220,6 +227,8 @@ class HostsManager:
             existing.device_type = device_type if device_type else None
         if disable_terminal_detection is not None:
             existing.disable_terminal_detection = disable_terminal_detection
+        if tags is not None:
+            existing.tags = tags
 
         if clear_password:
             existing.password_encrypted = None

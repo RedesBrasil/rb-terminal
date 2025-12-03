@@ -14,6 +14,7 @@ from PySide6.QtCore import Qt, Signal
 
 from core.hosts import Host, HostsManager
 from core.device_types import get_device_types_manager
+from gui.tags_widget import TagsWidget
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,10 @@ class HostDialog(QDialog):
         self._device_type.setCurrentText("")
         self._device_type.lineEdit().setPlaceholderText("Ex: Linux, MikroTik, Cisco...")
         form.addRow("Tipo Dispositivo:", self._device_type)
+
+        # Tags
+        self._tags_widget = TagsWidget()
+        form.addRow("Tags:", self._tags_widget)
 
         # Advanced options section (collapsible)
         self._advanced_toggle = QPushButton("▶ Opções Avançadas")
@@ -241,6 +246,10 @@ class HostDialog(QDialog):
         if self._host.device_type:
             self._device_type.setCurrentText(self._host.device_type)
 
+        # Set tags
+        if self._host.tags:
+            self._tags_widget.set_tags(self._host.tags)
+
         # Show placeholder for password if saved
         if self._host.password_encrypted:
             self._pass_input.setPlaceholderText("••••••••  (senha salva)")
@@ -275,6 +284,7 @@ class HostDialog(QDialog):
         password = self._pass_input.text()
         terminal_type = self._terminal_type.currentText()
         device_type = self._device_type.currentText().strip()
+        tags = self._tags_widget.get_tags()
 
         # Validation
         if not name:
@@ -307,7 +317,8 @@ class HostDialog(QDialog):
                     terminal_type=terminal_type,
                     device_type=device_type if device_type else None,
                     disable_terminal_detection=False,
-                    clear_password=clear_password
+                    clear_password=clear_password,
+                    tags=tags
                 )
             else:
                 # Add new host
@@ -319,7 +330,8 @@ class HostDialog(QDialog):
                     password=password if password else None,
                     terminal_type=terminal_type,
                     device_type=device_type if device_type else None,
-                    disable_terminal_detection=False
+                    disable_terminal_detection=False,
+                    tags=tags
                 )
 
             self.accept()

@@ -8,7 +8,7 @@ import logging
 import sys
 from pathlib import Path
 from typing import Optional
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 
 from core.crypto import get_config_dir
 
@@ -21,6 +21,9 @@ DEFAULT_SETTINGS = {
     "theme": "dark",
     "max_agent_iterations": 10,
     "chat_position": "bottom",
+    "available_tags": [],
+    "hosts_view_mode": "cards",
+    "hosts_sort_by": "name",
 }
 
 
@@ -42,6 +45,9 @@ class Settings:
     theme: str = "dark"
     max_agent_iterations: int = 10
     chat_position: str = "bottom"
+    available_tags: list = field(default_factory=list)
+    hosts_view_mode: str = "cards"
+    hosts_sort_by: str = "name"
 
     def to_dict(self) -> dict:
         """Convert to dictionary."""
@@ -56,6 +62,9 @@ class Settings:
             theme=data.get("theme", "dark"),
             max_agent_iterations=int(data.get("max_agent_iterations", 10) or 10),
             chat_position=data.get("chat_position", "bottom") or "bottom",
+            available_tags=data.get("available_tags", []),
+            hosts_view_mode=data.get("hosts_view_mode", "cards") or "cards",
+            hosts_sort_by=data.get("hosts_sort_by", "name") or "name",
         )
 
 
@@ -189,6 +198,52 @@ class SettingsManager:
     def reload(self) -> None:
         """Reload settings from file."""
         self._load()
+
+    # Tags management
+    def get_tags(self) -> list[str]:
+        """Get list of available tags."""
+        return list(self.settings.available_tags)
+
+    def add_tag(self, tag: str) -> None:
+        """Add a new tag to the available tags list."""
+        tag = tag.strip()
+        if tag and tag not in self.settings.available_tags:
+            self.settings.available_tags.append(tag)
+            self.settings.available_tags.sort()
+            self.save()
+
+    def remove_tag(self, tag: str) -> None:
+        """Remove a tag from the available tags list."""
+        if tag in self.settings.available_tags:
+            self.settings.available_tags.remove(tag)
+            self.save()
+
+    # Hosts view settings
+    def get_hosts_view_mode(self) -> str:
+        """Get hosts view mode ('cards' or 'list')."""
+        mode = getattr(self.settings, "hosts_view_mode", "cards")
+        if mode not in {"cards", "list"}:
+            mode = "cards"
+        return mode
+
+    def set_hosts_view_mode(self, mode: str) -> None:
+        """Set hosts view mode."""
+        if mode in {"cards", "list"}:
+            self.settings.hosts_view_mode = mode
+            self.save()
+
+    def get_hosts_sort_by(self) -> str:
+        """Get hosts sort field ('name', 'host', 'device_type')."""
+        sort_by = getattr(self.settings, "hosts_sort_by", "name")
+        if sort_by not in {"name", "host", "device_type"}:
+            sort_by = "name"
+        return sort_by
+
+    def set_hosts_sort_by(self, sort_by: str) -> None:
+        """Set hosts sort field."""
+        if sort_by in {"name", "host", "device_type"}:
+            self.settings.hosts_sort_by = sort_by
+            self.save()
 
 
 # Singleton instance

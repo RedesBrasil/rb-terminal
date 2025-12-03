@@ -11,11 +11,10 @@ import asyncssh
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QMessageBox, QStatusBar, QSplitter, QListWidget, QListWidgetItem,
-    QMenu, QFrame, QToolBar, QSizePolicy, QLineEdit, QDialog, QTabWidget,
-    QToolButton
+    QMessageBox, QStatusBar, QSplitter, QMenu, QFrame, QToolBar, QSizePolicy,
+    QLineEdit, QDialog, QTabWidget, QToolButton, QStackedWidget
 )
-from PySide6.QtCore import Qt, Slot, Signal, QTimer, QPropertyAnimation, QEasingCurve, Property, QSize, QMetaObject, Q_ARG
+from PySide6.QtCore import Qt, Slot, Signal, QTimer, QSize
 from PySide6.QtGui import QCloseEvent, QAction, QColor, QPainter, QPixmap, QIcon
 
 from core.ssh_session import SSHSession, SSHConfig
@@ -27,67 +26,13 @@ from gui.chat_widget import ChatWidget
 from gui.hosts_dialog import HostDialog, PasswordPromptDialog, QuickConnectDialog
 from gui.settings_dialog import SettingsDialog
 from gui.tab_session import TabSession
+from gui.hosts_view import HostsView
 
 logger = logging.getLogger(__name__)
 
 
-class CollapsibleSidebar(QFrame):
-    """Collapsible sidebar widget with animation."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self._expanded_width = 250
-        self._collapsed_width = 0
-        self._is_expanded = True
-        self._animation: Optional[QPropertyAnimation] = None
-
-        self.setMinimumWidth(0)
-        self.setMaximumWidth(self._expanded_width)
-
-    def get_sidebar_width(self) -> int:
-        return self.maximumWidth()
-
-    def set_sidebar_width(self, width: int) -> None:
-        self.setMinimumWidth(width)
-        self.setMaximumWidth(width)
-
-    sidebar_width = Property(int, get_sidebar_width, set_sidebar_width)
-
-    def toggle(self) -> None:
-        """Toggle sidebar visibility with animation."""
-        self._is_expanded = not self._is_expanded
-        self._animate_to(self._expanded_width if self._is_expanded else self._collapsed_width)
-
-    def expand(self) -> None:
-        """Expand the sidebar."""
-        if not self._is_expanded:
-            self._is_expanded = True
-            self._animate_to(self._expanded_width)
-
-    def collapse(self) -> None:
-        """Collapse the sidebar."""
-        if self._is_expanded:
-            self._is_expanded = False
-            self._animate_to(self._collapsed_width)
-
-    def is_expanded(self) -> bool:
-        return self._is_expanded
-
-    def _animate_to(self, target_width: int) -> None:
-        """Animate to target width."""
-        if self._animation:
-            self._animation.stop()
-
-        self._animation = QPropertyAnimation(self, b"sidebar_width")
-        self._animation.setDuration(200)
-        self._animation.setStartValue(self.maximumWidth())
-        self._animation.setEndValue(target_width)
-        self._animation.setEasingCurve(QEasingCurve.Type.OutCubic)
-        self._animation.start()
-
-
 class MainWindow(QMainWindow):
-    """Main application window with collapsible hosts sidebar, tabs, and chat."""
+    """Main application window with hosts view, terminal tabs, and chat."""
 
     # Signal for thread-safe SSH output handling (includes tab_id)
     _ssh_output_received = Signal(str, str)  # tab_id, data
@@ -165,25 +110,33 @@ class MainWindow(QMainWindow):
         # Central widget
         central = QWidget()
         self.setCentralWidget(central)
-        main_layout = QHBoxLayout(central)
+        main_layout = QVBoxLayout(central)
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # Collapsible sidebar for hosts
-        self._sidebar = CollapsibleSidebar()
-        self._setup_sidebar()
-        main_layout.addWidget(self._sidebar)
-
-        # Main content area (terminal + bottom chat)
-        content_widget = QWidget()
-        content_layout = QVBoxLayout(content_widget)
-        content_layout.setContentsMargins(0, 0, 0, 0)
-        content_layout.setSpacing(0)
-        self._content_layout = content_layout
-
-        # Toolbar
+        # Toolbar (always visible)
         toolbar = self._create_toolbar()
-        content_layout.addWidget(toolbar)
+        main_layout.addWidget(toolbar)
+
+        # Stacked widget for switching between hosts view and terminal view
+        self._stacked_widget = QStackedWidget()
+        main_layout.addWidget(self._stacked_widget)
+
+        # Page 0: Hosts view (main screen when not connected)
+        self._hosts_view = HostsView(self._hosts_manager)
+        self._hosts_view.connect_requested.connect(self._connect_to_host)
+        self._hosts_view.edit_requested.connect(self._edit_host)
+        self._hosts_view.delete_requested.connect(self._delete_host)
+        self._hosts_view.add_requested.connect(self._on_add_host_clicked)
+        self._hosts_view.quick_connect_requested.connect(self._on_quick_connect)
+        self._stacked_widget.addWidget(self._hosts_view)
+
+        # Page 1: Terminal area (tabs + chat)
+        self._terminal_area = QWidget()
+        terminal_layout = QVBoxLayout(self._terminal_area)
+        terminal_layout.setContentsMargins(0, 0, 0, 0)
+        terminal_layout.setSpacing(0)
+        self._content_layout = terminal_layout
 
         # Tab widget for multiple terminals
         self._tab_widget = QTabWidget()
@@ -232,7 +185,7 @@ class MainWindow(QMainWindow):
         self._terminal_chat_splitter: Optional[QSplitter] = None
         self._rebuild_terminal_chat_splitter()
 
-        main_layout.addWidget(content_widget, 1)
+        self._stacked_widget.addWidget(self._terminal_area)
 
         # Status bar
         self._status_bar = QStatusBar()
@@ -241,35 +194,6 @@ class MainWindow(QMainWindow):
 
         # Apply dark theme
         self._apply_dark_theme()
-
-    def _setup_sidebar(self) -> None:
-        """Setup the hosts sidebar content."""
-        layout = QVBoxLayout(self._sidebar)
-        layout.setContentsMargins(8, 8, 8, 8)
-
-        # Title
-        title = QLabel("Hosts")
-        title.setStyleSheet("font-size: 14px; font-weight: bold; padding: 4px;")
-        layout.addWidget(title)
-
-        # Search field
-        self._hosts_search = QLineEdit()
-        self._hosts_search.setPlaceholderText("Pesquisar...")
-        self._hosts_search.setClearButtonEnabled(True)
-        self._hosts_search.textChanged.connect(self._on_hosts_search_changed)
-        layout.addWidget(self._hosts_search)
-
-        # Hosts list
-        self._hosts_list = QListWidget()
-        self._hosts_list.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self._hosts_list.customContextMenuRequested.connect(self._on_hosts_context_menu)
-        self._hosts_list.itemDoubleClicked.connect(self._on_host_double_clicked)
-        layout.addWidget(self._hosts_list)
-
-        # Add host button
-        self._add_host_btn = QPushButton("+ Adicionar Host")
-        self._add_host_btn.clicked.connect(self._on_add_host_clicked)
-        layout.addWidget(self._add_host_btn)
 
     def _setup_chat_panel(self) -> None:
         """Setup the chat panel content."""
@@ -417,14 +341,12 @@ class MainWindow(QMainWindow):
             }
         """)
 
-        # Toggle hosts sidebar button
-        self._toggle_hosts_btn = QAction("Hosts", self)
-        self._toggle_hosts_btn.setCheckable(True)
-        self._toggle_hosts_btn.setChecked(True)
-        self._toggle_hosts_btn.setToolTip("Mostrar/Esconder lista de hosts (Ctrl+H)")
-        self._toggle_hosts_btn.setShortcut("Ctrl+H")
-        self._toggle_hosts_btn.triggered.connect(self._on_toggle_hosts)
-        toolbar.addAction(self._toggle_hosts_btn)
+        # Hosts button - go back to hosts view
+        self._hosts_btn = QAction("Hosts", self)
+        self._hosts_btn.setToolTip("Voltar para lista de hosts (Ctrl+H)")
+        self._hosts_btn.setShortcut("Ctrl+H")
+        self._hosts_btn.triggered.connect(self._show_hosts_view)
+        toolbar.addAction(self._hosts_btn)
 
         toolbar.addSeparator()
 
@@ -436,6 +358,13 @@ class MainWindow(QMainWindow):
         self._toggle_chat_btn.setShortcut("Ctrl+I")
         self._toggle_chat_btn.triggered.connect(self._on_toggle_chat)
         toolbar.addAction(self._toggle_chat_btn)
+
+        # Terminal button - return to terminal view (only visible when sessions exist)
+        self._terminal_btn = QAction("Terminal", self)
+        self._terminal_btn.setToolTip("Voltar para terminal")
+        self._terminal_btn.triggered.connect(self._show_terminal_view)
+        self._terminal_btn.setVisible(False)  # Hidden by default
+        toolbar.addAction(self._terminal_btn)
 
         toolbar.addSeparator()
 
@@ -524,22 +453,6 @@ class MainWindow(QMainWindow):
             QSplitter::handle:hover {
                 background-color: #007acc;
             }
-            QListWidget {
-                background-color: #252526;
-                border: 1px solid #3c3c3c;
-                border-radius: 4px;
-                outline: none;
-            }
-            QListWidget::item {
-                padding: 8px 12px;
-                border-bottom: 1px solid #3c3c3c;
-            }
-            QListWidget::item:selected {
-                background-color: #094771;
-            }
-            QListWidget::item:hover:!selected {
-                background-color: #2a2d2e;
-            }
             QMenu {
                 background-color: #3c3c3c;
                 border: 1px solid #555555;
@@ -552,10 +465,6 @@ class MainWindow(QMainWindow):
             }
             QMenu::item:selected {
                 background-color: #094771;
-            }
-            CollapsibleSidebar {
-                background-color: #252526;
-                border-right: 1px solid #3c3c3c;
             }
         """)
 
@@ -631,19 +540,33 @@ class MainWindow(QMainWindow):
         # Update chat state
         self._chat.set_enabled_state(connected)
 
+        # Check if any session is connected
+        any_connected = any(s.is_connected for s in self._sessions.values())
+
+        # Show/hide Terminal button based on whether any session is connected
+        self._terminal_btn.setVisible(any_connected)
+
         if connected and session and session.config:
             host = session.config.host
             self._status_bar.showMessage(f"Conectado a {host}")
             self._status_bar.setStyleSheet("background-color: #107c10; color: white;")
-            # Collapse sidebar when connected
-            self._sidebar.collapse()
-            self._toggle_hosts_btn.setChecked(False)
+            # Show terminal view when connected
+            self._show_terminal_view()
         else:
             self._status_bar.showMessage("Desconectado")
             self._status_bar.setStyleSheet("background-color: #007acc; color: white;")
-            # Expand sidebar when disconnected
-            self._sidebar.expand()
-            self._toggle_hosts_btn.setChecked(True)
+            if not any_connected:
+                # Show hosts view when no connection
+                self._show_hosts_view()
+
+    def _show_hosts_view(self) -> None:
+        """Show the hosts view."""
+        self._stacked_widget.setCurrentIndex(0)
+        self._hosts_view.refresh()
+
+    def _show_terminal_view(self) -> None:
+        """Show the terminal view."""
+        self._stacked_widget.setCurrentIndex(1)
 
     def _create_new_tab(self) -> TabSession:
         """Create a new empty terminal tab."""
@@ -851,42 +774,8 @@ class MainWindow(QMainWindow):
         pass
 
     def _refresh_hosts_list(self) -> None:
-        """Refresh the hosts list widget."""
-        self._hosts_list.clear()
-        hosts = self._hosts_manager.get_all()
-
-        # Get search filter text
-        search_text = self._hosts_search.text().strip().lower() if hasattr(self, '_hosts_search') else ""
-
-        for host in hosts:
-            # Apply filter if search text is present
-            if search_text:
-                # Search in all relevant fields
-                searchable = f"{host.name} {host.host} {host.port} {host.username} {host.device_type or ''} {host.terminal_type}".lower()
-                if search_text not in searchable:
-                    continue
-
-            item = QListWidgetItem()
-            display_text = f"{host.name}\n{host.host}:{host.port}"
-            item.setText(display_text)
-            item.setData(Qt.ItemDataRole.UserRole, host.id)
-
-            if host.password_encrypted:
-                item.setToolTip(f"{host.username}@{host.host}:{host.port}\nSenha salva")
-            else:
-                item.setToolTip(f"{host.username}@{host.host}:{host.port}\nSem senha salva")
-
-            self._hosts_list.addItem(item)
-
-    @Slot(str)
-    def _on_hosts_search_changed(self, text: str) -> None:
-        """Handle search text change - filter hosts list."""
-        self._refresh_hosts_list()
-
-    @Slot()
-    def _on_toggle_hosts(self) -> None:
-        """Toggle hosts sidebar visibility."""
-        self._sidebar.toggle()
+        """Refresh the hosts view."""
+        self._hosts_view.refresh()
 
     @Slot()
     def _on_toggle_chat(self) -> None:
@@ -941,41 +830,6 @@ class MainWindow(QMainWindow):
         dialog = HostDialog(self._hosts_manager, parent=self)
         if dialog.exec():
             self._refresh_hosts_list()
-
-    @Slot(QListWidgetItem)
-    def _on_host_double_clicked(self, item: QListWidgetItem) -> None:
-        """Handle double click on host item - connect."""
-        host_id = item.data(Qt.ItemDataRole.UserRole)
-        self._connect_to_host(host_id)
-
-    def _on_hosts_context_menu(self, position) -> None:
-        """Show context menu for hosts list."""
-        item = self._hosts_list.itemAt(position)
-        if not item:
-            return
-
-        host_id = item.data(Qt.ItemDataRole.UserRole)
-        host = self._hosts_manager.get_by_id(host_id)
-        if not host:
-            return
-
-        menu = QMenu(self)
-
-        connect_action = QAction("Conectar", self)
-        connect_action.triggered.connect(lambda: self._connect_to_host(host_id))
-        menu.addAction(connect_action)
-
-        menu.addSeparator()
-
-        edit_action = QAction("Editar", self)
-        edit_action.triggered.connect(lambda: self._edit_host(host_id))
-        menu.addAction(edit_action)
-
-        delete_action = QAction("Excluir", self)
-        delete_action.triggered.connect(lambda: self._delete_host(host_id))
-        menu.addAction(delete_action)
-
-        menu.exec(self._hosts_list.mapToGlobal(position))
 
     def _initiate_connection_for_session(
         self,
