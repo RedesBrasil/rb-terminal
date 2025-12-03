@@ -106,27 +106,6 @@ class CursorTracker:
         self.y = 1
 
 
-# Legacy terminal query patterns (kept for backward compatibility)
-# Note: For MikroTik, use CursorTracker with proactive_terminal_response=True instead
-TERMINAL_QUERIES = {
-    # Primary Device Attributes (DA1) - ESC[c or ESC[0c
-    re.compile(rb'\x1b\[0?c(?!\?)'): b'\x1b[?62;1;2;6;8c',
-
-    # Secondary Device Attributes (DA2) - ESC[>c or ESC[>0c
-    re.compile(rb'\x1b\[>0?c'): b'\x1b[>1;10;0c',
-
-    # DECID (ESC Z) - legacy terminal ID request
-    re.compile(rb'\x1bZ'): b'\x1b[?62;1;2;6;8c',
-
-    # Cursor Position Report (DSR 6) - ESC[6n
-    # Note: This is a fixed response. For accurate position, use CursorTracker
-    re.compile(rb'\x1b\[6n'): b'\x1b[1;1R',
-
-    # Device Status Report (DSR 5) - ESC[5n
-    re.compile(rb'\x1b\[5n'): b'\x1b[0n',
-}
-
-
 @dataclass
 class SSHConfig:
     """SSH connection configuration."""
@@ -137,7 +116,6 @@ class SSHConfig:
     terminal_type: str = "xterm"
     term_width: int = 80
     term_height: int = 24
-    proactive_terminal_response: bool = False  # Enable for MikroTik to get colors without delay
 
 
 class InteractiveAuthHandler:
@@ -313,15 +291,13 @@ class SSHSession:
             )
 
             self._connected = True
-            logger.info(f"SSH connection established (terminal: {self.config.terminal_type})")
 
-            # Initialize cursor tracker for proactive terminal response (MikroTik)
-            if self.config.proactive_terminal_response:
-                self._cursor_tracker = CursorTracker(
-                    width=self.config.term_width,
-                    height=self.config.term_height
-                )
-                logger.info("Proactive terminal response enabled (for MikroTik colors)")
+            # Always initialize cursor tracker for terminal queries (works for MikroTik, harmless for others)
+            self._cursor_tracker = CursorTracker(
+                width=self.config.term_width,
+                height=self.config.term_height
+            )
+            logger.info(f"SSH connection established (terminal: {self.config.terminal_type})")
 
             # Start reading output in background
             self._read_task = asyncio.create_task(self._read_output())
@@ -361,15 +337,10 @@ class SSHSession:
                         timeout=0.05
                     )
                     if data:
-                        # Handle terminal queries
+                        # Handle terminal queries (auto-detection for MikroTik and others)
                         elapsed = asyncio.get_event_loop().time() - connection_start
                         if elapsed < query_response_window:
-                            if self._cursor_tracker:
-                                # Use CursorTracker for accurate position tracking
-                                await self._respond_with_cursor_tracker(data, csi_pattern)
-                            else:
-                                # Fall back to legacy query response (no duplicate tracking)
-                                await self._respond_to_terminal_queries_legacy(data)
+                            await self._respond_with_cursor_tracker(data, csi_pattern)
 
                         # Send raw bytes to terminal - pyte can handle bytes directly
                         # This preserves ANSI escape sequences perfectly
@@ -482,25 +453,6 @@ class SSHSession:
 
         except Exception as e:
             logger.warning(f"Error in cursor tracker response: {e}")
-
-    async def _respond_to_terminal_queries_legacy(self, data: bytes) -> None:
-        """
-        Legacy terminal query response (without cursor tracking).
-        Used when proactive_terminal_response is disabled.
-
-        Args:
-            data: Raw bytes received from remote
-        """
-        if not self._process or not self._process.stdin:
-            return
-
-        for pattern, response in TERMINAL_QUERIES.items():
-            if pattern.search(data):
-                try:
-                    self._process.stdin.write(response)
-                    await self._process.stdin.drain()
-                except Exception as e:
-                    logger.warning(f"Failed to send terminal query response: {e}")
 
     async def disconnect(self) -> None:
         """Close SSH connection gracefully."""

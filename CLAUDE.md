@@ -209,11 +209,11 @@ await session.disconnect()
 - Detecta EOF, `ChannelClosedError`, `ConnectionLost`, `BrokenPipeError`
 - `_manual_disconnect` flag diferencia desconexao manual vs inesperada
 
-**Cores ANSI em MikroTik:**
-- MikroTik envia queries de terminal (DA1, DA2) para detectar capacidades antes de habilitar cores
-- `_respond_to_terminal_queries_async()` responde automaticamente com respostas VT220
-- Se nao funcionar, usar `disable_terminal_detection=True` no Host (adiciona sufixo `+ct` ao username)
-- Sufixo `+ct` desabilita deteccao de terminal no MikroTik, forcando modo sem cores nativas
+**Auto-deteccao de Terminal Queries (MikroTik e outros):**
+- O sistema responde automaticamente a terminal queries (DA1, DA2, cursor position) para TODOS os dispositivos
+- `CursorTracker` rastreia posicao do cursor e responde queries nos primeiros 5 segundos de conexao
+- Funciona independente do `device_type` selecionado - nao e necessario especificar "MikroTik"
+- Inofensivo para Linux/outros: dispositivos que nao enviam queries simplesmente ignoram as respostas
 
 ### gui/main_window.py
 
@@ -397,7 +397,7 @@ python main.py --debug
 
 Isso ativa logs DEBUG detalhados de:
 - **Conexoes SSH**: handshake, auth, canais
-- **Terminal queries**: respostas automaticas para MikroTik (DA1, DA2, cursor position)
+- **Terminal queries**: respostas automaticas para todos os dispositivos (DA1, DA2, cursor position)
 - **API calls**: requisicoes e respostas da OpenRouter API
 - **Agente IA**: execucao de comandos, tool calls, thinking
 - **asyncio**: eventos de event loop (proactor, workers)
@@ -408,13 +408,11 @@ Isso ativa logs DEBUG detalhados de:
 ```
 core.ssh_session - INFO - Connecting to 192.168.1.1:22
 core.ssh_session - INFO - SSH connection established (terminal: xterm)
-core.ssh_session - INFO - Proactive terminal response enabled (for MikroTik colors)
 ```
 
-**Deteccao automatica de cores MikroTik (DEBUG):**
+**Auto-deteccao de terminal queries (DEBUG):**
 ```
 core.ssh_session - DEBUG - CursorTracker: Query ESC[6n -> Response b'\x1b[53;1R'
-core.ssh_session - DEBUG - Proactive response: DA1 -> VT220
 ```
 
 **Erro de API OpenRouter:**
@@ -425,9 +423,9 @@ core.agent - ERROR - API request failed: 401 Unauthorized
 ### Problemas Comuns
 
 **1. Cores nao aparecem em MikroTik**
-- Verifique nos logs DEBUG se `Proactive terminal response enabled` aparece
-- O sistema responde automaticamente a terminal queries (DA1, DA2)
-- Nao e mais necessario usar `disable_terminal_detection` (deprecated)
+- O sistema responde automaticamente a terminal queries para TODOS os dispositivos
+- Rode com `--debug` e verifique se `CursorTracker: Query` aparece nos logs
+- Nao e necessario especificar device_type="MikroTik" - auto-deteccao funciona sempre
 
 **2. IA nao executa comandos**
 - Rode com `--debug` e verifique logs de `core.agent`

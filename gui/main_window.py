@@ -719,8 +719,6 @@ class MainWindow(QMainWindow):
             return
 
         # Has username - connect directly (password via keyboard-interactive if needed)
-        enable_proactive = device_type == "MikroTik"
-
         config = SSHConfig(
             host=host,
             port=port,
@@ -729,7 +727,6 @@ class MainWindow(QMainWindow):
             terminal_type=terminal_type,
             term_width=cols,
             term_height=rows,
-            proactive_terminal_response=enable_proactive
         )
 
         asyncio.ensure_future(self._connect_async(config))
@@ -955,9 +952,6 @@ class MainWindow(QMainWindow):
             return
 
         # Build config with collected credentials
-        # Enable proactive terminal response for MikroTik (fast colors without delay)
-        enable_proactive = self._current_device_type == "MikroTik"
-
         config = SSHConfig(
             host=self._pending_connection["host"],
             port=self._pending_connection["port"],
@@ -966,7 +960,6 @@ class MainWindow(QMainWindow):
             terminal_type=self._pending_connection["terminal_type"],
             term_width=self._pending_connection["term_width"],
             term_height=self._pending_connection["term_height"],
-            proactive_terminal_response=enable_proactive
         )
 
         # Keep pending_connection for retry on auth failure
