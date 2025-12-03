@@ -28,10 +28,13 @@ rb-terminal/
 │   ├── settings.py             # Gerenciador de configurações (singleton)
 │   └── device_types.py         # Gerenciador de tipos de dispositivos
 ├── gui/
-│   ├── main_window.py          # Janela principal com sidebar + abas + chat
+│   ├── main_window.py          # Janela principal com hosts view + abas + chat
 │   ├── terminal_widget.py      # Widget terminal com emulação ANSI
 │   ├── tab_session.py          # Dataclass TabSession (estado por aba)
 │   ├── chat_widget.py          # Widget chat IA
+│   ├── hosts_view.py           # Tela principal de hosts (cards/lista)
+│   ├── host_card.py            # Widgets de card e item de lista
+│   ├── tags_widget.py          # Widget de tags com autocomplete
 │   ├── hosts_dialog.py         # Dialogs de hosts
 │   └── settings_dialog.py      # Dialog de configurações
 ├── config/
@@ -45,7 +48,7 @@ Salvos em `~/.rb-terminal/` (ou `%APPDATA%\.rb-terminal` no Windows):
 
 - `hosts.json` - Hosts salvos com senhas criptografadas
 - `device_types.json` - Tipos de dispositivos customizados
-- `settings.json` - Configurações do usuário (API key, modelo, chat_position)
+- `settings.json` - Configurações do usuário (API key, modelo, chat_position, available_tags, hosts_view_mode, hosts_sort_by)
 - `.key` - Chave Fernet
 
 ## Componentes Principais
@@ -60,11 +63,11 @@ Wrapper asyncssh com PTY. `SSHConfig` define host, port, username, password, ter
 
 ### core/settings.py
 
-Singleton `get_settings_manager()` para configurações com persistência. Métodos: `get_api_key()`, `get_model()`, `set_api_key()`, `save()`.
+Singleton `get_settings_manager()` para configurações com persistência. Métodos: `get_api_key()`, `get_model()`, `set_api_key()`, `get_tags()`, `add_tag()`, `save()`.
 
 ### core/hosts.py
 
-Modelo `Host` com campos: id, name, host, port, username, password_encrypted, terminal_type, device_type, created_at. `HostsManager` para CRUD.
+Modelo `Host` com campos: id, name, host, port, username, password_encrypted, terminal_type, device_type, tags, created_at. `HostsManager` para CRUD.
 
 ### gui/tab_session.py
 
@@ -72,7 +75,7 @@ Dataclass `TabSession` encapsula estado de cada aba: id (UUID), terminal, ssh_se
 
 ### gui/main_window.py
 
-Arquitetura: `_sessions: Dict[str, TabSession]` por tab_id, `_tab_widget: QTabWidget`. Signals thread-safe: `_ssh_output_received(tab_id, data)`, `_unexpected_disconnect(tab_id)`. Fluxo de conexão: `_connect_to_host()` → `_initiate_connection_for_session()` → `_connect_session_async()` → `_create_agent_for_session()`.
+Arquitetura: `QStackedWidget` alterna entre `HostsView` (index 0) e área de terminal (index 1). `_sessions: Dict[str, TabSession]` por tab_id, `_tab_widget: QTabWidget`. Signals thread-safe: `_ssh_output_received(tab_id, data)`, `_unexpected_disconnect(tab_id)`. Fluxo de conexão: `_connect_to_host()` → `_initiate_connection_for_session()` → `_connect_session_async()` → `_create_agent_for_session()`.
 
 ### gui/terminal_widget.py
 
