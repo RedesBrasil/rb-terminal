@@ -7,7 +7,6 @@ import json
 import base64
 import logging
 import uuid
-import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
@@ -345,12 +344,28 @@ class DataManager:
         Args:
             path: New path for data.json
         """
-        new_path = path / "data.json" if path.is_dir() else path
+        new_path = (path / "data.json" if path.is_dir() else path).resolve()
 
-        # Copy current data to new location
-        if self._data_path.exists():
-            new_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(self._data_path, new_path)
+        # No-op if the path is unchanged
+        if self._data_path.resolve() == new_path:
+            return
+
+        # Ensure we have the latest in-memory data so we can write without
+        # touching the potentially locked source file.
+        if not self._loaded:
+            self.load()
+
+        temp_path = new_path.with_suffix(".tmp")
+
+        try:
+            self._write_to_path(temp_path)
+            temp_path.replace(new_path)
+        finally:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except Exception:
+                    pass
 
         # Update pointer
         pointer = {"data_path": str(new_path)}
@@ -393,21 +408,27 @@ class DataManager:
             logger.error(f"Failed to load data: {e}")
             raise
 
+    def _serialize_data(self) -> dict:
+        """Serialize current state to a dict for persistence."""
+        return {
+            "version": DATA_VERSION,
+            "security": self._security.to_dict(),
+            "settings": self._settings.to_dict(),
+            "hosts": [h.to_dict() for h in self._hosts]
+        }
+
+    def _write_to_path(self, path: Path) -> None:
+        """Write serialized data to the given path."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        data = self._serialize_data()
+
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+
     def _save(self) -> None:
         """Save data to file."""
         try:
-            self._data_path.parent.mkdir(parents=True, exist_ok=True)
-
-            data = {
-                "version": DATA_VERSION,
-                "security": self._security.to_dict(),
-                "settings": self._settings.to_dict(),
-                "hosts": [h.to_dict() for h in self._hosts]
-            }
-
-            with open(self._data_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
-
+            self._write_to_path(self._data_path)
             logger.debug("Data saved")
 
         except Exception as e:
@@ -748,20 +769,32 @@ class DataManager:
             include_settings: Include settings in export
             include_hosts: Include hosts in export
             include_passwords: Include passwords (requires export_password)
-            export_password: Password to encrypt exported passwords
+        export_password: Password to encrypt exported passwords
         """
         export_crypto = None
-        if include_passwords and export_password:
+        uses_master_crypto = False
+
+        # Decide how to protect passwords: reuse master password crypto if available,
+        # otherwise leave as-is (plaintext) when no master password.
+        if include_passwords and self._security.has_master_password and self._crypto and self._crypto.has_key:
+            export_crypto = self._crypto
+            uses_master_crypto = True
+        elif include_passwords and export_password:
             export_crypto = CryptoManager(master_password=export_password)
 
         export_data = {
             "version": DATA_VERSION,
             "exported_at": datetime.now().isoformat(),
-            "has_encrypted_passwords": include_passwords and export_password is not None
+            "has_encrypted_passwords": include_passwords and export_crypto is not None
         }
 
         if include_passwords and export_crypto:
-            export_data["password_salt"] = export_crypto.salt_base64
+            # If we are reusing the current master crypto, also persist its salt so the
+            # import step can derive the same key from the master password.
+            if uses_master_crypto:
+                export_data["password_salt"] = self._security.password_salt
+            else:
+                export_data["password_salt"] = export_crypto.salt_base64
 
         if include_settings:
             export_data["settings"] = self._settings.to_dict()
@@ -771,12 +804,18 @@ class DataManager:
             for host in self._hosts:
                 host_dict = host.to_dict()
 
-                if include_passwords and host.password_encrypted:
-                    # Decrypt with current key, encrypt with export key
-                    plaintext = self.get_password(host.id)
-                    if plaintext and export_crypto:
-                        host_dict["password_exported"] = export_crypto.encrypt(plaintext)
-                    host_dict["password_encrypted"] = None
+                if include_passwords:
+                    if host.password_encrypted:
+                        plaintext = self.get_password(host.id)
+                        if plaintext and export_crypto:
+                            # Re-encrypt with export crypto (master or provided password)
+                            host_dict["password_exported"] = export_crypto.encrypt(plaintext)
+                            host_dict["password_encrypted"] = None
+                        else:
+                            # Keep as-is (plaintext when no master password)
+                            host_dict["password_encrypted"] = plaintext
+                    else:
+                        host_dict["password_encrypted"] = None
                 else:
                     host_dict["password_encrypted"] = None
 
@@ -859,6 +898,14 @@ class DataManager:
                     host_data["password_encrypted"] = existing.password_encrypted if existing else None
 
                 host = Host.from_dict(host_data)
+
+                # If we imported plaintext passwords into an instance with a master
+                # password, encrypt them with the current key for at-rest protection.
+                if host.password_encrypted and self._crypto and self._crypto.has_key and not data.get("has_encrypted_passwords"):
+                    try:
+                        host.password_encrypted = self._crypto.encrypt(host.password_encrypted)
+                    except Exception:
+                        host.password_encrypted = None
 
                 if host.id in existing_ids:
                     # Update existing

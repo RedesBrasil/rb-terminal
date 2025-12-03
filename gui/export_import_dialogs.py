@@ -8,8 +8,7 @@ from typing import Optional
 
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QLineEdit, QCheckBox, QGroupBox, QRadioButton, QButtonGroup,
-    QFrame, QMessageBox
+    QLineEdit, QCheckBox, QRadioButton, QMessageBox
 )
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
@@ -50,38 +49,10 @@ class ExportDialog(QDialog):
         self._hosts_cb.toggled.connect(self._on_hosts_toggled)
         layout.addWidget(self._hosts_cb)
 
-        # Password options (only if hosts selected)
-        self._password_frame = QFrame()
-        password_layout = QVBoxLayout(self._password_frame)
-        password_layout.setContentsMargins(20, 0, 0, 0)
-
-        self._include_passwords_cb = QCheckBox("Incluir senhas dos hosts")
-        self._include_passwords_cb.toggled.connect(self._on_passwords_toggled)
-        password_layout.addWidget(self._include_passwords_cb)
-
-        # Password fields (only if include passwords)
-        self._password_fields = QFrame()
-        pw_layout = QVBoxLayout(self._password_fields)
-        pw_layout.setContentsMargins(20, 10, 0, 0)
-
-        pw_info = QLabel("As senhas serao criptografadas com esta senha:")
-        pw_info.setStyleSheet("color: #888;")
-        pw_layout.addWidget(pw_info)
-
-        self._export_password = QLineEdit()
-        self._export_password.setEchoMode(QLineEdit.EchoMode.Password)
-        self._export_password.setPlaceholderText("Senha para o arquivo exportado")
-        pw_layout.addWidget(self._export_password)
-
-        self._export_password_confirm = QLineEdit()
-        self._export_password_confirm.setEchoMode(QLineEdit.EchoMode.Password)
-        self._export_password_confirm.setPlaceholderText("Confirmar senha")
-        pw_layout.addWidget(self._export_password_confirm)
-
-        self._password_fields.setVisible(False)
-        password_layout.addWidget(self._password_fields)
-
-        layout.addWidget(self._password_frame)
+        # Password toggle (default: export with passwords)
+        self._skip_passwords_cb = QCheckBox("Nao Exportar Senhas")
+        self._skip_passwords_cb.setChecked(False)
+        layout.addWidget(self._skip_passwords_cb)
 
         layout.addStretch()
 
@@ -147,35 +118,21 @@ class ExportDialog(QDialog):
         """)
 
     def _on_hosts_toggled(self, checked: bool) -> None:
-        self._password_frame.setVisible(checked)
-        if not checked:
-            self._include_passwords_cb.setChecked(False)
-
-    def _on_passwords_toggled(self, checked: bool) -> None:
-        self._password_fields.setVisible(checked)
+        # If hosts are not being exported, skip passwords automatically.
+        if checked:
+            self._skip_passwords_cb.setChecked(False)
+        else:
+            self._skip_passwords_cb.setChecked(True)
 
     def _on_export(self) -> None:
         if not self._settings_cb.isChecked() and not self._hosts_cb.isChecked():
             QMessageBox.warning(self, "Erro", "Selecione pelo menos uma opcao para exportar.")
             return
 
-        if self._include_passwords_cb.isChecked():
-            pw1 = self._export_password.text()
-            pw2 = self._export_password_confirm.text()
-
-            if not pw1:
-                QMessageBox.warning(self, "Erro", "Digite uma senha para proteger o arquivo.")
-                return
-
-            if pw1 != pw2:
-                QMessageBox.warning(self, "Erro", "As senhas nao conferem.")
-                return
-
         self._options = {
             "include_settings": self._settings_cb.isChecked(),
             "include_hosts": self._hosts_cb.isChecked(),
-            "include_passwords": self._include_passwords_cb.isChecked(),
-            "export_password": self._export_password.text() if self._include_passwords_cb.isChecked() else None
+            "include_passwords": not self._skip_passwords_cb.isChecked()
         }
         self.accept()
 
