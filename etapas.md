@@ -267,29 +267,31 @@ curl -s "https://openrouter.ai/api/v1/chat/completions" \
 ---
 
 ## ETAPA 4: Terminal Avançado
-**Objetivo:** Múltiplas abas, cores, histórico  
-**Status:** Em andamento (cores ANSI concluídas)
+**Objetivo:** Múltiplas abas, cores, histórico
+**Status:** Concluída
 
 ### Arquivos a modificar:
 ```
 ├── gui/
 │   ├── main_window.py      # sistema de abas
+│   ├── tab_session.py      # NOVO - dataclass para estado da aba
 │   └── terminal_widget.py  # melhorias
 ```
 
 ### Funcionalidades:
-- [ ] Abas para múltiplas sessões SSH
-- [ ] Nova aba: Ctrl+T ou botão "+"
-- [ ] Fechar aba: botão X na aba
-- [ ] Histórico de comandos por sessão (setas ↑↓)
+- [x] Abas para múltiplas sessões SSH
+- [x] Nova aba: Ctrl+T ou botão "+"
+- [x] Fechar aba: botão X na aba (Ctrl+W)
+- [x] Navegação entre abas: Ctrl+Left / Ctrl+Right
+- [x] Histórico de comandos por sessão (setas ↑↓) (funciona nativamente pelos hosts)
 - [x] Suporte a cores ANSI (output colorido compatível com Mikrotik/Cisco/Linux)
-- [ ] Redimensionamento de terminal (PTY resize)
-- [ ] Indicador de status na aba (conectado/desconectado/reconectando)
-- [ ] Banner de modo desconectado com instrução "Pressione R para reconectar"
+- [x] Redimensionamento de terminal (PTY resize)
+- [x] Indicador de status na aba (conectado/desconectado/conectando)
+- [x] Banner de modo desconectado com instrução "Pressione R para reconectar"
 
 ### Critérios de aceite:
 1. Conectar em 2 hosts diferentes em abas separadas
-2. Alternar entre abas
+2. Alternar entre abas (ctrl + → e ctrl + ← )
 3. Comando com cores (ex: `ls --color`) mostra colorido
 4. Seta pra cima recupera último comando (já funciona)
 5. Redimensionar janela → terminal se ajusta

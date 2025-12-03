@@ -1,21 +1,22 @@
 """
 Main Window for RB Terminal.
-Contains collapsible hosts sidebar, terminal widget, and bottom AI chat panel.
+Contains collapsible hosts sidebar, terminal widget with tabs, and AI chat panel.
 """
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Optional, Dict
 
 import asyncssh
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QMessageBox, QStatusBar, QSplitter, QListWidget, QListWidgetItem,
-    QMenu, QFrame, QToolBar, QSizePolicy, QLineEdit, QDialog
+    QMenu, QFrame, QToolBar, QSizePolicy, QLineEdit, QDialog, QTabWidget,
+    QToolButton
 )
 from PySide6.QtCore import Qt, Slot, Signal, QTimer, QPropertyAnimation, QEasingCurve, Property, QSize, QMetaObject, Q_ARG
-from PySide6.QtGui import QCloseEvent, QAction
+from PySide6.QtGui import QCloseEvent, QAction, QColor, QPainter, QPixmap, QIcon
 
 from core.ssh_session import SSHSession, SSHConfig
 from core.agent import create_agent, SSHAgent
@@ -25,6 +26,7 @@ from gui.terminal_widget import TerminalWidget
 from gui.chat_widget import ChatWidget
 from gui.hosts_dialog import HostDialog, PasswordPromptDialog, QuickConnectDialog
 from gui.settings_dialog import SettingsDialog
+from gui.tab_session import TabSession
 
 logger = logging.getLogger(__name__)
 
@@ -85,24 +87,23 @@ class CollapsibleSidebar(QFrame):
 
 
 class MainWindow(QMainWindow):
-    """Main application window with collapsible hosts sidebar and bottom chat."""
+    """Main application window with collapsible hosts sidebar, tabs, and chat."""
 
-    # Signal for thread-safe SSH output handling
-    _ssh_output_received = Signal(str)
-    # Signal for unexpected disconnection
-    _unexpected_disconnect = Signal()
+    # Signal for thread-safe SSH output handling (includes tab_id)
+    _ssh_output_received = Signal(str, str)  # tab_id, data
+    # Signal for unexpected disconnection (includes tab_id)
+    _unexpected_disconnect = Signal(str)  # tab_id
 
     def __init__(self):
         super().__init__()
 
-        self._ssh_session: Optional[SSHSession] = None
-        self._agent: Optional[SSHAgent] = None
-        self._resize_timer: Optional[QTimer] = None
+        # Tab management
+        self._sessions: Dict[str, TabSession] = {}  # tab_id -> TabSession
+        self._tab_widget: Optional[QTabWidget] = None
         self._agent_task: Optional[asyncio.Task] = None
-        self._current_host_id: Optional[str] = None
-        self._current_device_type: Optional[str] = None
+
+        self._resize_timer: Optional[QTimer] = None
         self._chat_visible: bool = False  # Chat starts hidden
-        self._last_config: Optional[SSHConfig] = None  # For reconnection
         self._settings_manager = get_settings_manager()
         self._chat_position = self._settings_manager.get_chat_position()
         self._splitter_sizes = {
@@ -112,11 +113,7 @@ class MainWindow(QMainWindow):
         }
         self._applying_splitter_sizes = False
 
-        # Pending connection data (used during pre-login)
-        self._pending_connection: Optional[dict] = None
-
-        # Output buffer for batching SSH output
-        self._output_buffer: list[str] = []
+        # Output timer for batching SSH output
         self._output_timer = QTimer()
         self._output_timer.setSingleShot(True)
         self._output_timer.timeout.connect(self._flush_output_buffer)
@@ -124,13 +121,40 @@ class MainWindow(QMainWindow):
         # Initialize hosts manager
         self._hosts_manager = HostsManager()
 
+        # Status icons for tabs
+        self._status_icons = {}
+        self._create_status_icons()
+
         self._setup_ui()
         self._setup_connections()
+
+        # Create first empty tab
+        self._create_new_tab()
+
         self._update_ui_state()
         self._refresh_hosts_list()
 
         # Start maximized
         self.showMaximized()
+
+    def _create_status_icons(self) -> None:
+        """Create status icons for tab states."""
+        def create_circle_icon(color: QColor) -> QIcon:
+            pixmap = QPixmap(12, 12)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            painter = QPainter(pixmap)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setBrush(color)
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawEllipse(1, 1, 10, 10)
+            painter.end()
+            return QIcon(pixmap)
+
+        self._status_icons = {
+            "disconnected": create_circle_icon(QColor(128, 128, 128)),
+            "connecting": create_circle_icon(QColor(202, 80, 16)),
+            "connected": create_circle_icon(QColor(16, 124, 16)),
+        }
 
     def _setup_ui(self) -> None:
         """Setup the main window UI."""
@@ -161,8 +185,44 @@ class MainWindow(QMainWindow):
         toolbar = self._create_toolbar()
         content_layout.addWidget(toolbar)
 
-        # Terminal widget
-        self._terminal = TerminalWidget()
+        # Tab widget for multiple terminals
+        self._tab_widget = QTabWidget()
+        self._tab_widget.setTabsClosable(True)
+        self._tab_widget.setMovable(True)
+        self._tab_widget.setDocumentMode(True)
+        self._tab_widget.tabCloseRequested.connect(self._on_tab_close_requested)
+        self._tab_widget.currentChanged.connect(self._on_tab_changed)
+
+        # Style the tab widget
+        self._tab_widget.setStyleSheet("""
+            QTabWidget::pane {
+                border: none;
+                background-color: #1e1e1e;
+            }
+            QTabBar::tab {
+                background-color: #2d2d2d;
+                color: #969696;
+                padding: 8px 16px;
+                margin-right: 2px;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+            }
+            QTabBar::tab:selected {
+                background-color: #1e1e1e;
+                color: #ffffff;
+            }
+            QTabBar::tab:hover:!selected {
+                background-color: #3c3c3c;
+            }
+            QTabBar::close-button {
+                image: url(close.png);
+                subcontrol-position: right;
+            }
+            QTabBar::close-button:hover {
+                background-color: #e81123;
+                border-radius: 2px;
+            }
+        """)
 
         # Chat panel (position determined by settings)
         self._chat_panel = QFrame()
@@ -239,19 +299,19 @@ class MainWindow(QMainWindow):
         """Create splitter configured for the selected chat position."""
         if self._chat_position == "bottom":
             splitter = QSplitter(Qt.Orientation.Vertical)
-            splitter.addWidget(self._terminal)
+            splitter.addWidget(self._tab_widget)
             splitter.addWidget(self._chat_panel)
             splitter.setStretchFactor(0, 1)
             splitter.setStretchFactor(1, 0)
         elif self._chat_position == "left":
             splitter = QSplitter(Qt.Orientation.Horizontal)
             splitter.addWidget(self._chat_panel)
-            splitter.addWidget(self._terminal)
+            splitter.addWidget(self._tab_widget)
             splitter.setStretchFactor(0, 0)
             splitter.setStretchFactor(1, 1)
         else:  # right
             splitter = QSplitter(Qt.Orientation.Horizontal)
-            splitter.addWidget(self._terminal)
+            splitter.addWidget(self._tab_widget)
             splitter.addWidget(self._chat_panel)
             splitter.setStretchFactor(0, 1)
             splitter.setStretchFactor(1, 0)
@@ -501,11 +561,6 @@ class MainWindow(QMainWindow):
 
     def _setup_connections(self) -> None:
         """Connect signals to slots."""
-        self._terminal.input_entered.connect(self._on_terminal_input)
-        self._terminal.reconnect_requested.connect(self._on_reconnect_requested)
-        self._terminal.prelogin_credentials.connect(self._on_prelogin_credentials)
-        self._terminal.prelogin_cancelled.connect(self._on_prelogin_cancelled)
-
         # SSH output signal - use AutoConnection since qasync integrates both loops
         self._ssh_output_received.connect(self._on_ssh_output_slot, Qt.ConnectionType.AutoConnection)
 
@@ -521,9 +576,54 @@ class MainWindow(QMainWindow):
         self._resize_timer.setSingleShot(True)
         self._resize_timer.timeout.connect(self._on_resize_timeout)
 
+        # Keyboard shortcuts for tabs
+        new_tab_action = QAction("Nova Aba", self)
+        new_tab_action.setShortcut("Ctrl+T")
+        new_tab_action.triggered.connect(self._on_new_tab)
+        self.addAction(new_tab_action)
+
+        close_tab_action = QAction("Fechar Aba", self)
+        close_tab_action.setShortcut("Ctrl+W")
+        close_tab_action.triggered.connect(self._on_close_current_tab)
+        self.addAction(close_tab_action)
+
+        next_tab_action = QAction("Proxima Aba", self)
+        next_tab_action.setShortcut("Ctrl+Right")
+        next_tab_action.triggered.connect(self._on_next_tab)
+        self.addAction(next_tab_action)
+
+        prev_tab_action = QAction("Aba Anterior", self)
+        prev_tab_action.setShortcut("Ctrl+Left")
+        prev_tab_action.triggered.connect(self._on_prev_tab)
+        self.addAction(prev_tab_action)
+
+    def _get_active_session(self) -> Optional[TabSession]:
+        """Get the currently active tab's session."""
+        if not self._tab_widget:
+            return None
+        index = self._tab_widget.currentIndex()
+        if index < 0:
+            return None
+        widget = self._tab_widget.widget(index)
+        if not widget:
+            return None
+        # Find session by terminal widget
+        for session in self._sessions.values():
+            if session.terminal is widget:
+                return session
+        return None
+
+    def _get_session_by_terminal(self, terminal: TerminalWidget) -> Optional[TabSession]:
+        """Get session by its terminal widget."""
+        for session in self._sessions.values():
+            if session.terminal is terminal:
+                return session
+        return None
+
     def _update_ui_state(self) -> None:
-        """Update UI based on connection state."""
-        connected = self._ssh_session is not None and self._ssh_session.is_connected
+        """Update UI based on active tab connection state."""
+        session = self._get_active_session()
+        connected = session is not None and session.is_connected
 
         # Update toolbar buttons
         self._quick_connect_btn.setEnabled(not connected)
@@ -531,8 +631,8 @@ class MainWindow(QMainWindow):
         # Update chat state
         self._chat.set_enabled_state(connected)
 
-        if connected:
-            host = self._ssh_session.config.host
+        if connected and session and session.config:
+            host = session.config.host
             self._status_bar.showMessage(f"Conectado a {host}")
             self._status_bar.setStyleSheet("background-color: #107c10; color: white;")
             # Collapse sidebar when connected
@@ -541,11 +641,214 @@ class MainWindow(QMainWindow):
         else:
             self._status_bar.showMessage("Desconectado")
             self._status_bar.setStyleSheet("background-color: #007acc; color: white;")
-            self._current_host_id = None
-            self._current_device_type = None
             # Expand sidebar when disconnected
             self._sidebar.expand()
             self._toggle_hosts_btn.setChecked(True)
+
+    def _create_new_tab(self) -> TabSession:
+        """Create a new empty terminal tab."""
+        session = TabSession()
+        session.terminal = TerminalWidget()
+
+        # Connect terminal signals for this session
+        session.terminal.input_entered.connect(
+            lambda data, s=session: self._on_terminal_input_for_session(s, data)
+        )
+        session.terminal.reconnect_requested.connect(
+            lambda s=session: self._on_reconnect_for_session(s)
+        )
+        session.terminal.prelogin_credentials.connect(
+            lambda u, p, s=session: self._on_prelogin_credentials_for_session(s, u, p)
+        )
+        session.terminal.prelogin_cancelled.connect(
+            lambda s=session: self._on_prelogin_cancelled_for_session(s)
+        )
+
+        # Add to sessions dict
+        self._sessions[session.id] = session
+
+        # Add tab to widget (no icon for new disconnected tabs)
+        index = self._tab_widget.addTab(session.terminal, session.display_name)
+        self._tab_widget.setCurrentIndex(index)
+
+        return session
+
+    def _update_tab_status(self, session: TabSession) -> None:
+        """Update tab icon and title for a session."""
+        if not session.terminal:
+            return
+
+        # Find tab index
+        for i in range(self._tab_widget.count()):
+            if self._tab_widget.widget(i) is session.terminal:
+                self._tab_widget.setTabText(i, session.display_name)
+                # Only show icon when connecting or connected (not disconnected)
+                if session.connection_status == "disconnected":
+                    self._tab_widget.setTabIcon(i, QIcon())  # Empty icon
+                else:
+                    self._tab_widget.setTabIcon(i, self._status_icons[session.connection_status])
+                break
+
+    @Slot()
+    def _on_new_tab(self) -> None:
+        """Handle new tab request (Ctrl+T or + button)."""
+        self._create_new_tab()
+
+    @Slot()
+    def _on_close_current_tab(self) -> None:
+        """Handle Ctrl+W - close current tab."""
+        index = self._tab_widget.currentIndex()
+        if index >= 0:
+            self._on_tab_close_requested(index)
+
+    @Slot(int)
+    def _on_tab_close_requested(self, index: int) -> None:
+        """Handle tab close request."""
+        widget = self._tab_widget.widget(index)
+        if not widget:
+            return
+
+        # Find session
+        session = self._get_session_by_terminal(widget)
+        if not session:
+            return
+
+        # Ask for confirmation
+        msg_box = QMessageBox(self)
+        msg_box.setWindowTitle("Fechar aba")
+        msg_box.setText("Deseja fechar esta aba?")
+        msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        msg_box.setDefaultButton(QMessageBox.No)
+        msg_box.button(QMessageBox.Yes).setText("Sim")
+        msg_box.button(QMessageBox.No).setText("Não")
+
+        if msg_box.exec() != QMessageBox.Yes:
+            return
+
+        # Disconnect if connected
+        if session.is_connected:
+            asyncio.ensure_future(self._close_tab_async(session, index))
+        else:
+            self._remove_tab(session, index)
+
+    async def _close_tab_async(self, session: TabSession, index: int) -> None:
+        """Close tab with async disconnect."""
+        await self._disconnect_session_async(session)
+        self._remove_tab(session, index)
+
+    def _remove_tab(self, session: TabSession, index: int) -> None:
+        """Remove a tab from the widget and cleanup."""
+        # Remove from sessions dict
+        if session.id in self._sessions:
+            del self._sessions[session.id]
+
+        # Remove tab
+        self._tab_widget.removeTab(index)
+
+        # If no tabs left, create a new empty one
+        if self._tab_widget.count() == 0:
+            self._create_new_tab()
+        else:
+            self._update_ui_state()
+
+    @Slot(int)
+    def _on_tab_changed(self, index: int) -> None:
+        """Handle tab change - update UI state and chat context."""
+        self._update_ui_state()
+
+        # Set focus to the terminal in the new tab
+        session = self._get_active_session()
+        if session and session.terminal:
+            session.terminal.set_focus()
+
+    @Slot()
+    def _on_next_tab(self) -> None:
+        """Switch to next tab (Ctrl+Right)."""
+        if not self._tab_widget or self._tab_widget.count() <= 1:
+            return
+        current = self._tab_widget.currentIndex()
+        next_index = (current + 1) % self._tab_widget.count()
+        self._tab_widget.setCurrentIndex(next_index)
+
+    @Slot()
+    def _on_prev_tab(self) -> None:
+        """Switch to previous tab (Ctrl+Left)."""
+        if not self._tab_widget or self._tab_widget.count() <= 1:
+            return
+        current = self._tab_widget.currentIndex()
+        prev_index = (current - 1) % self._tab_widget.count()
+        self._tab_widget.setCurrentIndex(prev_index)
+
+    def _on_terminal_input_for_session(self, session: TabSession, data: str) -> None:
+        """Handle input from a specific terminal session."""
+        if not session.ssh_session:
+            return
+
+        # Check if waiting for authentication input
+        if session.ssh_session.waiting_for_auth:
+            session.ssh_session.provide_auth_input(data)
+            return
+
+        if session.ssh_session.is_connected:
+            asyncio.ensure_future(session.ssh_session.send_input(data))
+
+    def _on_reconnect_for_session(self, session: TabSession) -> None:
+        """Handle reconnect request for a specific session."""
+        # Check if we have pending connection (from cancelled pre-login or auth failure)
+        if session.pending_connection:
+            if session.terminal:
+                cols, rows = session.terminal.get_terminal_size()
+                session.pending_connection["term_width"] = cols
+                session.pending_connection["term_height"] = rows
+
+            # Check if we already have username (retry password scenario)
+            has_username = bool(session.pending_connection.get("username"))
+            if session.terminal:
+                session.terminal.start_prelogin(need_username=not has_username, need_password=True)
+            return
+
+        # Otherwise try to reconnect with last successful config
+        if session.config:
+            if session.terminal:
+                cols, rows = session.terminal.get_terminal_size()
+                session.config.term_width = cols
+                session.config.term_height = rows
+            asyncio.ensure_future(self._connect_session_async(session, session.config))
+
+    def _on_prelogin_credentials_for_session(self, session: TabSession, username: str, password: str) -> None:
+        """Handle credentials received from terminal pre-login mode for a session."""
+        if not session.pending_connection:
+            return
+
+        # Use username from pending_connection if available (retry scenario)
+        # Otherwise use the username just entered
+        final_username = session.pending_connection.get("username") or username
+
+        if not final_username:
+            # User cancelled or empty username
+            session.pending_connection = None
+            if session.terminal:
+                session.terminal.clear()
+            return
+
+        # Build config with collected credentials
+        config = SSHConfig(
+            host=session.pending_connection["host"],
+            port=session.pending_connection["port"],
+            username=final_username,
+            password=password,
+            terminal_type=session.pending_connection["terminal_type"],
+            term_width=session.pending_connection["term_width"],
+            term_height=session.pending_connection["term_height"],
+        )
+
+        # Keep pending_connection for retry on auth failure
+        asyncio.ensure_future(self._connect_session_async(session, config))
+
+    def _on_prelogin_cancelled_for_session(self, session: TabSession) -> None:
+        """Handle pre-login cancellation for a session."""
+        # Keep pending_connection so R can retry
+        pass
 
     def _refresh_hosts_list(self) -> None:
         """Refresh the hosts list widget."""
@@ -602,8 +905,10 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_quick_connect(self) -> None:
         """Handle quick connect button click."""
-        # Check if already connected
-        if self._ssh_session and self._ssh_session.is_connected:
+        session = self._get_active_session()
+
+        # Check if active tab is already connected
+        if session and session.is_connected:
             reply = QMessageBox.question(
                 self,
                 "Ja conectado",
@@ -612,14 +917,15 @@ class MainWindow(QMainWindow):
             )
             if reply != QMessageBox.StandardButton.Yes:
                 return
-            asyncio.ensure_future(self._disconnect_async())
+            asyncio.ensure_future(self._disconnect_session_async(session))
 
         dialog = QuickConnectDialog(parent=self)
         if dialog.exec():
             data = dialog.get_connection_data()
 
-            # Use unified connection method
-            self._initiate_connection(
+            # Use unified connection method with active session
+            self._initiate_connection_for_session(
+                session=session,
                 host=data["host"],
                 port=data["port"],
                 username=data["username"],
@@ -671,15 +977,17 @@ class MainWindow(QMainWindow):
 
         menu.exec(self._hosts_list.mapToGlobal(position))
 
-    def _initiate_connection(
+    def _initiate_connection_for_session(
         self,
+        session: Optional[TabSession],
         host: str,
         port: int,
         username: str,
         password: str,
         terminal_type: str,
         device_type: Optional[str],
-        host_id: Optional[str] = None
+        host_id: Optional[str] = None,
+        host_name: Optional[str] = None
     ) -> None:
         """
         Unified connection method for both saved hosts and quick connect.
@@ -690,6 +998,7 @@ class MainWindow(QMainWindow):
         - Starting pre-login mode or direct connection
 
         Args:
+            session: The tab session to connect (uses active if None)
             host: Host address or IP
             port: SSH port
             username: Username (empty string triggers pre-login prompt)
@@ -697,25 +1006,32 @@ class MainWindow(QMainWindow):
             terminal_type: Terminal type (xterm, xterm-256color, vt100)
             device_type: Device type for AI context (Linux, MikroTik, etc.)
             host_id: Host ID for saved hosts (None for quick connect)
+            host_name: Display name for saved hosts
         """
-        cols, rows = self._terminal.get_terminal_size()
+        if session is None:
+            session = self._get_active_session()
+        if session is None or session.terminal is None:
+            return
 
-        self._current_host_id = host_id
-        self._current_device_type = device_type
+        cols, rows = session.terminal.get_terminal_size()
+
+        session.host_id = host_id
+        session.host_name = host_name
+        session.device_type = device_type
 
         # Check if we need to ask for credentials in terminal (like PuTTY)
         need_username = not username
 
         if need_username:
             # Store pending connection data and start pre-login mode
-            self._pending_connection = {
+            session.pending_connection = {
                 "host": host,
                 "port": port,
                 "terminal_type": terminal_type,
                 "term_width": cols,
                 "term_height": rows,
             }
-            self._terminal.start_prelogin(need_username=True, need_password=True)
+            session.terminal.start_prelogin(need_username=True, need_password=True)
             return
 
         # Has username - connect directly (password via keyboard-interactive if needed)
@@ -729,45 +1045,39 @@ class MainWindow(QMainWindow):
             term_height=rows,
         )
 
-        asyncio.ensure_future(self._connect_async(config))
+        asyncio.ensure_future(self._connect_session_async(session, config))
 
     def _connect_to_host(self, host_id: str) -> None:
-        """Connect to a saved host."""
+        """Connect to a saved host. Opens new tab if current is connected."""
         host = self._hosts_manager.get_by_id(host_id)
         if not host:
             return
 
-        if self._ssh_session and self._ssh_session.is_connected:
-            reply = QMessageBox.question(
-                self,
-                "Ja conectado",
-                "Deseja desconectar da sessao atual e conectar ao novo host?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
-            asyncio.ensure_future(self._disconnect_and_connect(host_id))
-            return
+        session = self._get_active_session()
+
+        # If current tab is connected, create a new tab for the new connection
+        if session and session.is_connected:
+            session = self._create_new_tab()
+
+        if not session:
+            session = self._create_new_tab()
 
         # Get saved password if available (may be None)
         password = self._hosts_manager.get_password(host_id)
 
         # Use unified connection method
         # get_effective_username() applies +ct suffix for MikroTik if configured (deprecated)
-        self._initiate_connection(
+        self._initiate_connection_for_session(
+            session=session,
             host=host.host,
             port=host.port,
             username=host.get_effective_username(),
             password=password or "",
             terminal_type=host.terminal_type,
             device_type=host.device_type,
-            host_id=host_id
+            host_id=host_id,
+            host_name=host.name
         )
-
-    async def _disconnect_and_connect(self, host_id: str) -> None:
-        """Disconnect current session and connect to new host."""
-        await self._disconnect_async()
-        self._connect_to_host(host_id)
 
     def _edit_host(self, host_id: str) -> None:
         """Edit a saved host."""
@@ -796,14 +1106,14 @@ class MainWindow(QMainWindow):
             self._hosts_manager.delete(host_id)
             self._refresh_hosts_list()
 
-    def _create_agent(self) -> None:
-        """Create AI agent for current SSH session."""
-        if not self._ssh_session:
+    def _create_agent_for_session(self, session: TabSession) -> None:
+        """Create AI agent for a session's SSH connection."""
+        if not session.ssh_session or not session.terminal:
             return
 
         async def execute_command(cmd: str) -> str:
-            if self._ssh_session and self._ssh_session.is_connected:
-                return await self._ssh_session.execute_command(cmd)
+            if session.ssh_session and session.ssh_session.is_connected:
+                return await session.ssh_session.execute_command(cmd)
             raise RuntimeError("Not connected")
 
         def on_command_executed(cmd: str, output: str) -> None:
@@ -813,59 +1123,71 @@ class MainWindow(QMainWindow):
                 return text.replace("\n", "\r\n")
 
             # Ensure injected command lines respect carriage return to avoid offsetting columns
-            self._terminal.append_output(f"\r\n$ {cmd}\r\n")
-            self._terminal.append_output(_normalize_for_terminal(output))
+            if session.terminal:
+                session.terminal.append_output(f"\r\n$ {cmd}\r\n")
+                session.terminal.append_output(_normalize_for_terminal(output))
 
         def on_thinking(status: str) -> None:
             self._chat.set_status(status)
 
-        self._agent = create_agent(
+        session.agent = create_agent(
             execute_command=execute_command,
             on_command_executed=on_command_executed,
             on_thinking=on_thinking,
-            device_type=self._current_device_type
+            device_type=session.device_type
         )
 
-    def _on_disconnect_callback(self) -> None:
-        """Callback called from SSH session when connection is lost unexpectedly."""
-        self._unexpected_disconnect.emit()
+    def _create_disconnect_callback_for_session(self, session: TabSession):
+        """Create a disconnect callback for a specific session."""
+        def callback():
+            self._unexpected_disconnect.emit(session.id)
+        return callback
 
-    async def _connect_async(self, config: SSHConfig) -> None:
-        """Async connection handler."""
+    async def _connect_session_async(self, session: TabSession, config: SSHConfig) -> None:
+        """Async connection handler for a session."""
+        if not session.terminal:
+            return
+
         self._quick_connect_btn.setEnabled(False)
+        session.connection_status = "connecting"
+        self._update_tab_status(session)
         self._status_bar.showMessage(f"Conectando a {config.host}...")
         self._status_bar.setStyleSheet("background-color: #ca5010; color: white;")
 
         try:
-            self._ssh_session = SSHSession(
+            session.ssh_session = SSHSession(
                 config,
-                self._on_ssh_output,
-                self._on_disconnect_callback
+                lambda data, s=session: self._on_ssh_output_for_session(s, data),
+                self._create_disconnect_callback_for_session(session)
             )
-            await self._ssh_session.connect()
+            await session.ssh_session.connect()
 
             # Success - clear pending connection and save for reconnection
-            self._pending_connection = None
-            self._last_config = config
-            self._terminal.clear()
-            self._terminal.set_focus()
+            session.pending_connection = None
+            session.config = config
+            session.connection_status = "connected"
+            session.terminal.clear()
+            session.terminal.set_focus()
 
             # Send terminal size after connection
-            cols, rows = self._terminal.get_terminal_size()
-            await self._ssh_session.resize_terminal(cols, rows)
+            cols, rows = session.terminal.get_terminal_size()
+            await session.ssh_session.resize_terminal(cols, rows)
 
-            self._create_agent()
+            self._create_agent_for_session(session)
+            self._update_tab_status(session)
             self._chat.clear_messages()
             self._update_ui_state()
 
         except asyncssh.PermissionDenied:
             # Authentication failed - ask for password again
             logger.warning(f"Authentication failed for {config.username}@{config.host}")
-            self._ssh_session = None
+            session.ssh_session = None
+            session.connection_status = "disconnected"
+            self._update_tab_status(session)
 
             # Store connection data for retry (keep username)
-            cols, rows = self._terminal.get_terminal_size()
-            self._pending_connection = {
+            cols, rows = session.terminal.get_terminal_size()
+            session.pending_connection = {
                 "host": config.host,
                 "port": config.port,
                 "username": config.username,  # Keep the username
@@ -875,14 +1197,16 @@ class MainWindow(QMainWindow):
             }
 
             # Show error and prompt for password again
-            self._terminal.append_output("Access denied\r\n")
-            self._terminal.start_prelogin(need_username=False, need_password=True)
+            session.terminal.append_output("Access denied\r\n")
+            session.terminal.start_prelogin(need_username=False, need_password=True)
             self._update_ui_state()
 
         except Exception as e:
             logger.error(f"Connection failed: {e}")
-            self._ssh_session = None
-            self._pending_connection = None
+            session.ssh_session = None
+            session.pending_connection = None
+            session.connection_status = "disconnected"
+            self._update_tab_status(session)
             QMessageBox.critical(
                 self,
                 "Erro de Conexao",
@@ -893,87 +1217,42 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_disconnect_clicked(self) -> None:
         """Handle disconnect button click."""
-        self._last_config = None  # Clear config on manual disconnect
-        asyncio.ensure_future(self._disconnect_async())
+        session = self._get_active_session()
+        if session:
+            session.config = None  # Clear config on manual disconnect
+            asyncio.ensure_future(self._disconnect_session_async(session))
 
-    @Slot()
-    def _on_unexpected_disconnect(self) -> None:
+    @Slot(str)
+    def _on_unexpected_disconnect(self, tab_id: str) -> None:
         """Handle unexpected disconnection from SSH session."""
-        logger.info("Unexpected disconnect detected")
+        logger.info(f"Unexpected disconnect detected for tab {tab_id}")
+
+        # Find session by ID
+        session = self._sessions.get(tab_id)
+        if not session:
+            return
+
         # Clean up session state
         if self._agent_task and not self._agent_task.done():
             self._agent_task.cancel()
-        self._agent = None
-        self._ssh_session = None
+        session.agent = None
+        session.ssh_session = None
+        session.connection_status = "disconnected"
 
-        # Clear any pending output buffer to prevent overwriting the message
+        # Clear any pending output buffer
         self._output_timer.stop()
-        self._output_buffer.clear()
+        session.output_buffer.clear()
+
+        # Update tab status
+        self._update_tab_status(session)
 
         # Show disconnected message in terminal
-        self._terminal.show_disconnected_message()
+        if session.terminal:
+            session.terminal.show_disconnected_message()
         self._update_ui_state()
 
-    @Slot()
-    def _on_reconnect_requested(self) -> None:
-        """Handle reconnect request from terminal (user pressed R)."""
-        # Check if we have pending connection (from cancelled pre-login or auth failure)
-        if self._pending_connection:
-            cols, rows = self._terminal.get_terminal_size()
-            self._pending_connection["term_width"] = cols
-            self._pending_connection["term_height"] = rows
-
-            # Check if we already have username (retry password scenario)
-            has_username = bool(self._pending_connection.get("username"))
-            self._terminal.start_prelogin(need_username=not has_username, need_password=True)
-            return
-
-        # Otherwise try to reconnect with last successful config
-        if self._last_config:
-            cols, rows = self._terminal.get_terminal_size()
-            self._last_config.term_width = cols
-            self._last_config.term_height = rows
-            asyncio.ensure_future(self._connect_async(self._last_config))
-
-    @Slot(str, str)
-    def _on_prelogin_credentials(self, username: str, password: str) -> None:
-        """Handle credentials received from terminal pre-login mode."""
-        if not self._pending_connection:
-            return
-
-        # Use username from pending_connection if available (retry scenario)
-        # Otherwise use the username just entered
-        final_username = self._pending_connection.get("username") or username
-
-        if not final_username:
-            # User cancelled or empty username
-            self._pending_connection = None
-            self._terminal.clear()
-            return
-
-        # Build config with collected credentials
-        config = SSHConfig(
-            host=self._pending_connection["host"],
-            port=self._pending_connection["port"],
-            username=final_username,
-            password=password,
-            terminal_type=self._pending_connection["terminal_type"],
-            term_width=self._pending_connection["term_width"],
-            term_height=self._pending_connection["term_height"],
-        )
-
-        # Keep pending_connection for retry on auth failure
-        asyncio.ensure_future(self._connect_async(config))
-
-    @Slot()
-    def _on_prelogin_cancelled(self) -> None:
-        """Handle pre-login cancellation (Ctrl+C or Escape)."""
-        # Keep pending_connection so R can retry
-        # Terminal is now in disconnected mode showing "Press R to retry"
-        pass
-
-    async def _disconnect_async(self) -> None:
-        """Async disconnection handler."""
+    async def _disconnect_session_async(self, session: TabSession) -> None:
+        """Async disconnection handler for a session."""
         if self._agent_task and not self._agent_task.done():
             self._agent_task.cancel()
             try:
@@ -982,74 +1261,72 @@ class MainWindow(QMainWindow):
                 pass
             self._agent_task = None
 
-        if self._agent:
-            await self._agent.close()
-            self._agent = None
+        if session.agent:
+            await session.agent.close()
+            session.agent = None
 
-        if self._ssh_session:
-            await self._ssh_session.disconnect()
-            self._ssh_session = None
+        if session.ssh_session:
+            await session.ssh_session.disconnect()
+            session.ssh_session = None
 
+        session.connection_status = "disconnected"
+        self._update_tab_status(session)
         self._update_ui_state()
 
-    def _on_ssh_output(self, data: str) -> None:
-        """Handle output received from SSH session (called from async task)."""
+    def _on_ssh_output_for_session(self, session: TabSession, data: str) -> None:
+        """Handle output received from SSH session for a specific session."""
         # Use signal for thread-safe communication
-        self._ssh_output_received.emit(data)
+        self._ssh_output_received.emit(session.id, data)
 
-    @Slot(str)
-    def _on_ssh_output_slot(self, data: str) -> None:
+    @Slot(str, str)
+    def _on_ssh_output_slot(self, tab_id: str, data: str) -> None:
         """Buffer SSH output and process in batches."""
-        # Ignore output if terminal is in disconnected mode
-        if self._terminal._disconnected_mode:
+        session = self._sessions.get(tab_id)
+        if not session or not session.terminal:
             return
-        self._output_buffer.append(data)
+
+        # Ignore output if terminal is in disconnected mode
+        if session.terminal._disconnected_mode:
+            return
+
+        session.output_buffer.append(data)
         # Start timer if not already running (10ms batching window)
         if not self._output_timer.isActive():
             self._output_timer.start(10)
 
     def _flush_output_buffer(self) -> None:
-        """Flush buffered output to terminal."""
-        if not self._output_buffer:
-            return
-        # Don't flush if terminal is in disconnected mode
-        if self._terminal._disconnected_mode:
-            self._output_buffer.clear()
-            return
-        # Combine all buffered data
-        combined = ''.join(self._output_buffer)
-        self._output_buffer.clear()
-        # Process combined data at once
-        if combined:
-            self._terminal.append_output(combined)
-
-    @Slot(str)
-    def _on_terminal_input(self, data: str) -> None:
-        """Handle input from terminal widget."""
-        if self._ssh_session:
-            # Check if waiting for authentication input
-            if self._ssh_session.waiting_for_auth:
-                self._ssh_session.provide_auth_input(data)
-                return
-
-            if self._ssh_session.is_connected:
-                asyncio.ensure_future(self._ssh_session.send_input(data))
+        """Flush buffered output to all terminals."""
+        for session in self._sessions.values():
+            if not session.output_buffer or not session.terminal:
+                continue
+            # Don't flush if terminal is in disconnected mode
+            if session.terminal._disconnected_mode:
+                session.output_buffer.clear()
+                continue
+            # Combine all buffered data
+            combined = ''.join(session.output_buffer)
+            session.output_buffer.clear()
+            # Process combined data at once
+            if combined:
+                session.terminal.append_output(combined)
 
     @Slot(str)
     def _on_chat_message(self, message: str) -> None:
         """Handle message from chat widget."""
-        if not self._agent or not self._ssh_session:
+        session = self._get_active_session()
+        if not session or not session.agent or not session.ssh_session:
             self._chat.add_message("Erro: Conecte-se a um host primeiro.", is_user=False)
             return
 
         self._chat.set_processing(True)
-        self._agent_task = asyncio.ensure_future(self._process_chat_message(message))
+        self._agent_task = asyncio.ensure_future(self._process_chat_message(session, message))
 
-    async def _process_chat_message(self, message: str) -> None:
+    async def _process_chat_message(self, session: TabSession, message: str) -> None:
         """Process chat message with AI agent."""
         try:
-            response = await self._agent.chat(message)
-            self._chat.add_message(response, is_user=False)
+            if session.agent:
+                response = await session.agent.chat(message)
+                self._chat.add_message(response, is_user=False)
         except asyncio.CancelledError:
             self._chat.add_message("Operacao cancelada.", is_user=False)
         except Exception as e:
@@ -1061,8 +1338,9 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_stop_agent(self) -> None:
         """Handle stop button click in chat."""
-        if self._agent:
-            self._agent.cancel()
+        session = self._get_active_session()
+        if session and session.agent:
+            session.agent.cancel()
         if self._agent_task and not self._agent_task.done():
             self._agent_task.cancel()
 
@@ -1074,17 +1352,24 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_resize_timeout(self) -> None:
-        """Handle resize timeout - update terminal size."""
-        if self._ssh_session and self._ssh_session.is_connected:
-            cols, rows = self._terminal.get_terminal_size()
+        """Handle resize timeout - update active terminal size."""
+        session = self._get_active_session()
+        if session and session.ssh_session and session.ssh_session.is_connected and session.terminal:
+            cols, rows = session.terminal.get_terminal_size()
             asyncio.ensure_future(
-                self._ssh_session.resize_terminal(cols, rows)
+                session.ssh_session.resize_terminal(cols, rows)
             )
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """Handle window close."""
-        if self._ssh_session and self._ssh_session.is_connected:
-            asyncio.ensure_future(self._disconnect_async())
+        """Handle window close - disconnect all sessions."""
+        # Check if any session is connected
+        connected_sessions = [s for s in self._sessions.values() if s.is_connected]
+        if connected_sessions:
+            # Disconnect all sessions
+            async def disconnect_all():
+                for session in connected_sessions:
+                    await self._disconnect_session_async(session)
+            asyncio.ensure_future(disconnect_all())
             QTimer.singleShot(100, self.close)
             event.ignore()
         else:

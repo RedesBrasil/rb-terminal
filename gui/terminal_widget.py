@@ -216,6 +216,7 @@ class TerminalWidget(QWidget):
 
         # Disconnected mode
         self._disconnected_mode = False
+        self._has_content = False  # No content yet - hide cursor
 
         # Pre-login mode (local username/password prompt like PuTTY)
         self._prelogin_mode = False
@@ -403,8 +404,8 @@ class TerminalWidget(QWidget):
         # Reset font
         painter.setFont(self._font)
 
-        # Draw cursor
-        if self._cursor_visible and self.hasFocus() and self._scroll_offset == 0:
+        # Draw cursor (only if terminal has content)
+        if self._cursor_visible and self.hasFocus() and self._scroll_offset == 0 and self._has_content:
             cursor_x = self._screen.cursor.x * self._char_width
             cursor_y = self._screen.cursor.y * self._char_height
             painter.fillRect(
@@ -593,6 +594,7 @@ class TerminalWidget(QWidget):
         if not text:
             return
 
+        self._has_content = True
         prev_total_lines = self._get_total_line_count()
 
         # Feed to pyte stream - process immediately
@@ -626,6 +628,7 @@ class TerminalWidget(QWidget):
         self._screen.reset()
         self._reset_scroll_position()
         self._disconnected_mode = False
+        self._has_content = False
         self._prelogin_mode = False
         self._prelogin_stage = ""
         self._prelogin_buffer = ""
