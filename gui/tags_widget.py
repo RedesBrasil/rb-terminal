@@ -4,12 +4,98 @@ Tags widget for selecting and managing tags on hosts.
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QFrame,
-    QLabel, QPushButton, QCompleter, QScrollArea, QSizePolicy
+    QLabel, QPushButton, QCompleter, QSizePolicy, QLayout
 )
-from PySide6.QtCore import Qt, Signal, QStringListModel, QEvent
-from PySide6.QtGui import QKeyEvent, QFocusEvent
+from PySide6.QtCore import Qt, Signal, QStringListModel, QRect, QSize, QPoint, QTimer
+from PySide6.QtGui import QFocusEvent
 
 from core.settings import get_settings_manager
+
+
+class FlowLayout(QLayout):
+    """A layout that arranges widgets in a flowing grid, wrapping to new lines."""
+
+    def __init__(self, parent=None, margin=0, spacing=-1):
+        super().__init__(parent)
+        self._item_list = []
+        self._spacing = spacing if spacing >= 0 else 4
+        self.setContentsMargins(margin, margin, margin, margin)
+
+    def addItem(self, item):
+        self._item_list.append(item)
+
+    def count(self):
+        return len(self._item_list)
+
+    def itemAt(self, index):
+        if 0 <= index < len(self._item_list):
+            return self._item_list[index]
+        return None
+
+    def takeAt(self, index):
+        if 0 <= index < len(self._item_list):
+            return self._item_list.pop(index)
+        return None
+
+    def expandingDirections(self):
+        return Qt.Orientation(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        return self._do_layout(QRect(0, 0, width, 0), test_only=True)
+
+    def setGeometry(self, rect):
+        super().setGeometry(rect)
+        self._do_layout(rect, test_only=False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._item_list:
+            size = size.expandedTo(item.minimumSize())
+        margins = self.contentsMargins()
+        size += QSize(margins.left() + margins.right(), margins.top() + margins.bottom())
+        return size
+
+    def _do_layout(self, rect, test_only):
+        margins = self.contentsMargins()
+        effective_rect = rect.adjusted(margins.left(), margins.top(), -margins.right(), -margins.bottom())
+        x = effective_rect.x()
+        y = effective_rect.y()
+        line_height = 0
+        has_items = False
+
+        for item in self._item_list:
+            widget = item.widget()
+            if widget is None:
+                continue
+
+            has_items = True
+            space_x = self._spacing
+            space_y = self._spacing
+            item_size = item.sizeHint()
+
+            next_x = x + item_size.width() + space_x
+            if next_x - space_x > effective_rect.right() + 1 and line_height > 0:
+                x = effective_rect.x()
+                y = y + line_height + space_y
+                next_x = x + item_size.width() + space_x
+                line_height = 0
+
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), item_size))
+
+            x = next_x
+            line_height = max(line_height, item_size.height())
+
+        if not has_items:
+            return 0
+
+        return y + line_height - rect.y() + margins.bottom()
 
 
 class TagChip(QFrame):
@@ -24,32 +110,32 @@ class TagChip(QFrame):
 
     def _setup_ui(self):
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(8, 2, 4, 2)
-        layout.setSpacing(4)
+        layout.setContentsMargins(10, 4, 6, 4)
+        layout.setSpacing(6)
 
         # Tag text
-        label = QLabel(self._text)
-        label.setStyleSheet("background: transparent; color: white; font-size: 11px;")
-        layout.addWidget(label)
+        self._label = QLabel(self._text)
+        self._label.setStyleSheet("background: transparent; color: white; font-size: 11px;")
+        layout.addWidget(self._label)
 
-        # Remove button
-        remove_btn = QPushButton("x")
-        remove_btn.setFixedSize(16, 16)
-        remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        remove_btn.setStyleSheet("""
-            QPushButton {
+        # Remove button - red X (always visible)
+        self._remove_btn = QLabel("✕")
+        self._remove_btn.setFixedSize(14, 14)
+        self._remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._remove_btn.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._remove_btn.setStyleSheet("""
+            QLabel {
                 background-color: transparent;
-                border: none;
-                color: rgba(255, 255, 255, 0.7);
+                color: #ff4444;
                 font-weight: bold;
-                font-size: 10px;
+                font-size: 11px;
             }
-            QPushButton:hover {
-                color: white;
+            QLabel:hover {
+                color: #ff0000;
             }
         """)
-        remove_btn.clicked.connect(lambda: self.removed.emit(self._text))
-        layout.addWidget(remove_btn)
+        self._remove_btn.mousePressEvent = lambda e: self.removed.emit(self._text)
+        layout.addWidget(self._remove_btn)
 
         self.setStyleSheet("""
             TagChip {
@@ -58,18 +144,27 @@ class TagChip(QFrame):
             }
         """)
 
+        # Set fixed size based on content
+        self._update_size()
+
+    def _update_size(self):
+        from PySide6.QtGui import QFontMetrics
+        fm = QFontMetrics(self._label.font())
+        text_width = fm.horizontalAdvance(self._text)
+        # margins (10+6) + spacing (6) + button (14) + extra padding
+        width = text_width + 10 + 6 + 6 + 14 + 4
+        height = 24
+        self.setFixedSize(width, height)
+
+    def sizeHint(self):
+        return self.size()
+
+    def minimumSizeHint(self):
+        return self.size()
+
     @property
     def text(self) -> str:
         return self._text
-
-
-class FlowLayout(QHBoxLayout):
-    """Simple horizontal layout that wraps items."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setSpacing(4)
-        self.setContentsMargins(0, 0, 0, 0)
 
 
 class TagInputLineEdit(QLineEdit):
@@ -83,11 +178,18 @@ class TagInputLineEdit(QLineEdit):
     def focusInEvent(self, event: QFocusEvent):
         """Show completer popup when input receives focus."""
         super().focusInEvent(event)
-        # Emit signal to update completer list
+        self._show_completer()
+
+    def mousePressEvent(self, event):
+        """Show completer popup when clicking on input."""
+        super().mousePressEvent(event)
+        self._show_completer()
+
+    def _show_completer(self):
+        """Emit signal and show completer."""
         self.focus_in.emit()
-        # Show completer with all available options
         if self.completer():
-            self.completer().complete()
+            QTimer.singleShot(0, self.completer().complete)
 
 
 class TagsWidget(QWidget):
@@ -156,38 +258,17 @@ class TagsWidget(QWidget):
             }
         """)
 
-        # Chips container (horizontal scroll)
-        self._chips_scroll = QScrollArea()
-        self._chips_scroll.setWidgetResizable(True)
-        self._chips_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self._chips_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._chips_scroll.setFixedHeight(36)
-        self._chips_scroll.setStyleSheet("""
-            QScrollArea {
-                background: transparent;
-                border: none;
-            }
-            QScrollArea > QWidget > QWidget {
-                background: transparent;
-            }
-        """)
-
+        # Chips container with FlowLayout (grows vertically)
         self._chips_container = QWidget()
-        self._chips_layout = FlowLayout(self._chips_container)
-        self._chips_scroll.setWidget(self._chips_container)
-        self._chips_scroll.hide()  # Hidden when no tags
+        self._chips_container.setStyleSheet("background: transparent;")
+        self._chips_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self._chips_layout = FlowLayout(self._chips_container, margin=2, spacing=4)
+        self._chips_container.hide()  # Hidden when no tags
 
-        main_layout.addWidget(self._chips_scroll)
+        main_layout.addWidget(self._chips_container)
 
         # Update completer with available tags
         self._update_completer()
-
-    def keyPressEvent(self, event: QKeyEvent):
-        """Handle comma key to add tag."""
-        if self._input.hasFocus() and event.text() == ',':
-            self._add_current_tag()
-            return
-        super().keyPressEvent(event)
 
     def _on_text_changed(self, text: str):
         """Handle text change - check for comma."""
@@ -202,7 +283,16 @@ class TagsWidget(QWidget):
     def _on_completer_activated(self, text: str):
         """Handle completer selection."""
         self._add_tag(text)
+        # Use QTimer to clear and reshow completer after processing
+        QTimer.singleShot(0, self._clear_and_show_completer)
+
+    def _clear_and_show_completer(self):
+        """Clear input and show completer with remaining tags."""
         self._input.clear()
+        self._update_completer()
+        # Show remaining tags if any
+        if self._completer_model.rowCount() > 0:
+            self._completer.complete()
 
     def _add_current_tag(self):
         """Add the current input text as a tag."""
@@ -230,8 +320,11 @@ class TagsWidget(QWidget):
         self._chip_widgets[tag] = chip
         self._chips_layout.addWidget(chip)
 
-        # Show chips container
-        self._chips_scroll.show()
+        # Show chips container and update layout
+        self._chips_container.show()
+        self._chips_layout.invalidate()
+        self._chips_container.updateGeometry()
+        self._chips_container.adjustSize()
 
         self.tags_changed.emit(self._selected_tags.copy())
 
@@ -249,7 +342,11 @@ class TagsWidget(QWidget):
 
         # Hide chips container if empty
         if not self._selected_tags:
-            self._chips_scroll.hide()
+            self._chips_container.hide()
+        else:
+            self._chips_layout.invalidate()
+            self._chips_container.updateGeometry()
+            self._chips_container.adjustSize()
 
         self.tags_changed.emit(self._selected_tags.copy())
 
