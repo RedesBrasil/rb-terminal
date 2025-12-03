@@ -8,9 +8,9 @@ from typing import Optional
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QLineEdit, QPushButton, QSpinBox, QComboBox,
-    QCheckBox, QDialogButtonBox, QMessageBox
+    QCheckBox, QDialogButtonBox, QMessageBox, QFrame, QWidget
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 
 from core.hosts import Host, HostsManager
 from core.device_types import get_device_types_manager
@@ -101,12 +101,6 @@ class HostDialog(QDialog):
 
         form.addRow("Senha:", password_layout)
 
-        # Terminal type
-        self._terminal_type = QComboBox()
-        self._terminal_type.addItems(["xterm-256color", "xterm", "vt100"])
-        self._terminal_type.setCurrentText("xterm-256color")
-        form.addRow("Tipo Terminal:", self._terminal_type)
-
         # Device type (editable combobox)
         self._device_type = QComboBox()
         self._device_type.setEditable(True)
@@ -116,21 +110,33 @@ class HostDialog(QDialog):
         self._device_type.lineEdit().setPlaceholderText("Ex: Linux, MikroTik, Cisco...")
         form.addRow("Tipo Dispositivo:", self._device_type)
 
-        # Disable terminal detection (for MikroTik compatibility)
-        self._disable_terminal_detection = QCheckBox("Desabilitar detecção de terminal")
-        self._disable_terminal_detection.setToolTip(
-            "Adiciona sufixo +ct ao usuário para dispositivos MikroTik.\n"
-            "Use se as cores não aparecerem corretamente."
-        )
-        form.addRow("", self._disable_terminal_detection)
+        # Advanced options section (collapsible)
+        self._advanced_toggle = QPushButton("▶ Opções Avançadas")
+        self._advanced_toggle.setCheckable(True)
+        self._advanced_toggle.setStyleSheet("text-align: left; padding: 5px; background: transparent; border: none; color: #888888;")
+        self._advanced_toggle.toggled.connect(self._toggle_advanced_options)
+        form.addRow("", self._advanced_toggle)
+
+        self._advanced_section = QWidget()
+        self._advanced_layout = QFormLayout()
+        self._advanced_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self._advanced_section.setLayout(self._advanced_layout)
+        self._advanced_section.setVisible(False)  # Hidden by default
+
+        # Terminal type (moved to advanced)
+        self._terminal_type = QComboBox()
+        self._terminal_type.addItems(["xterm", "xterm-256color", "vt100"])
+        self._terminal_type.setCurrentText("xterm")  # Default to "xterm"
+        self._advanced_layout.addRow("Tipo Terminal:", self._terminal_type)
+
+        form.addRow("", self._advanced_section)
 
         layout.addLayout(form)
 
         # Info label
         info_label = QLabel(
-            "Dica: Use xterm-256color para cores, vt100 para dispositivos antigos.\n"
-            "O tipo de dispositivo ajuda a IA a usar comandos apropriados.\n"
-            "Se cores não funcionam em MikroTik, tente 'Desabilitar detecção de terminal'."
+            "Dica: Usuário e senha são opcionais - o terminal pedirá se não fornecidos.\n"
+            "O tipo de dispositivo ajuda a IA a usar comandos apropriados."
         )
         info_label.setStyleSheet("color: #888888; font-size: 11px;")
         info_label.setWordWrap(True)
@@ -234,7 +240,6 @@ class HostDialog(QDialog):
         self._terminal_type.setCurrentText(self._host.terminal_type)
         if self._host.device_type:
             self._device_type.setCurrentText(self._host.device_type)
-        self._disable_terminal_detection.setChecked(self._host.disable_terminal_detection)
 
         # Show placeholder for password if saved
         if self._host.password_encrypted:
@@ -253,6 +258,14 @@ class HostDialog(QDialog):
         if checked:
             self._pass_input.clear()
 
+    def _toggle_advanced_options(self, checked: bool) -> None:
+        """Toggle advanced options visibility."""
+        self._advanced_section.setVisible(checked)
+        if checked:
+            self._advanced_toggle.setText("▼ Opções Avançadas")
+        else:
+            self._advanced_toggle.setText("▶ Opções Avançadas")
+
     def _on_save(self) -> None:
         """Handle save button click."""
         name = self._name_input.text().strip()
@@ -262,7 +275,6 @@ class HostDialog(QDialog):
         password = self._pass_input.text()
         terminal_type = self._terminal_type.currentText()
         device_type = self._device_type.currentText().strip()
-        disable_terminal_detection = self._disable_terminal_detection.isChecked()
 
         # Validation
         if not name:
@@ -294,7 +306,7 @@ class HostDialog(QDialog):
                     password=password if password else None,
                     terminal_type=terminal_type,
                     device_type=device_type if device_type else None,
-                    disable_terminal_detection=disable_terminal_detection,
+                    disable_terminal_detection=False,
                     clear_password=clear_password
                 )
             else:
@@ -307,7 +319,7 @@ class HostDialog(QDialog):
                     password=password if password else None,
                     terminal_type=terminal_type,
                     device_type=device_type if device_type else None,
-                    disable_terminal_detection=disable_terminal_detection
+                    disable_terminal_detection=False
                 )
 
             self.accept()
@@ -494,11 +506,6 @@ class QuickConnectDialog(QDialog):
         password_layout.addWidget(show_pass)
         form.addRow("Senha:", password_layout)
 
-        # Terminal type
-        self._terminal_type = QComboBox()
-        self._terminal_type.addItems(["xterm-256color", "xterm", "vt100"])
-        form.addRow("Tipo Terminal:", self._terminal_type)
-
         # Device type (editable combobox)
         self._device_type = QComboBox()
         self._device_type.setEditable(True)
@@ -508,13 +515,26 @@ class QuickConnectDialog(QDialog):
         self._device_type.lineEdit().setPlaceholderText("Ex: Linux, MikroTik, Cisco...")
         form.addRow("Tipo Dispositivo:", self._device_type)
 
-        # Disable terminal detection (for MikroTik compatibility)
-        self._disable_terminal_detection = QCheckBox("Desabilitar detecção de terminal")
-        self._disable_terminal_detection.setToolTip(
-            "Adiciona sufixo +ct ao usuário para dispositivos MikroTik.\n"
-            "Use se as cores não aparecerem corretamente."
-        )
-        form.addRow("", self._disable_terminal_detection)
+        # Advanced options section (collapsible)
+        self._advanced_toggle = QPushButton("▶ Opções Avançadas")
+        self._advanced_toggle.setCheckable(True)
+        self._advanced_toggle.setStyleSheet("text-align: left; padding: 5px; background: transparent; border: none; color: #888888;")
+        self._advanced_toggle.toggled.connect(self._toggle_advanced_options)
+        form.addRow("", self._advanced_toggle)
+
+        self._advanced_section = QWidget()
+        self._advanced_layout = QFormLayout()
+        self._advanced_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self._advanced_section.setLayout(self._advanced_layout)
+        self._advanced_section.setVisible(False)  # Hidden by default
+
+        # Terminal type (moved to advanced)
+        self._terminal_type = QComboBox()
+        self._terminal_type.addItems(["xterm", "xterm-256color", "vt100"])
+        self._terminal_type.setCurrentText("xterm")  # Default to "xterm"
+        self._advanced_layout.addRow("Tipo Terminal:", self._terminal_type)
+
+        form.addRow("", self._advanced_section)
 
         layout.addLayout(form)
         layout.addSpacing(15)
@@ -594,12 +614,19 @@ class QuickConnectDialog(QDialog):
             }
         """)
 
+    def _toggle_advanced_options(self, checked: bool) -> None:
+        """Toggle advanced options visibility."""
+        self._advanced_section.setVisible(checked)
+        if checked:
+            self._advanced_toggle.setText("▼ Opções Avançadas")
+        else:
+            self._advanced_toggle.setText("▶ Opções Avançadas")
+
     def _on_connect(self) -> None:
         """Handle connect button click."""
         host = self._host_input.text().strip()
         username = self._user_input.text().strip()
         device_type = self._device_type.currentText().strip()
-        disable_terminal_detection = self._disable_terminal_detection.isChecked()
 
         if not host:
             QMessageBox.warning(self, "Erro", "Digite o endereco IP ou hostname.")
@@ -612,19 +639,13 @@ class QuickConnectDialog(QDialog):
         if device_type:
             get_device_types_manager().ensure_exists(device_type)
 
-        # Apply +ct suffix if terminal detection is disabled
-        effective_username = username
-        if disable_terminal_detection and username and '+' not in username:
-            effective_username = f"{username}+ct"
-
         self._connection_data = {
             "host": host,
             "port": self._port_input.value(),
-            "username": effective_username,
+            "username": username,
             "password": self._pass_input.text(),
             "terminal_type": self._terminal_type.currentText(),
-            "device_type": device_type if device_type else None,
-            "disable_terminal_detection": disable_terminal_detection
+            "device_type": device_type if device_type else None
         }
         self.accept()
 

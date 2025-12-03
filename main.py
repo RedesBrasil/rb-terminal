@@ -22,7 +22,7 @@ def setup_logging() -> None:
     """Configure logging for the application."""
     log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG,  # Changed to DEBUG for troubleshooting
         format=log_format,
         handlers=[
             logging.StreamHandler(sys.stdout)
