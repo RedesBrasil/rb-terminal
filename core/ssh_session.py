@@ -14,34 +14,115 @@ import asyncssh
 
 logger = logging.getLogger(__name__)
 
-# Terminal query patterns that require responses
-# These are escape sequences that remote devices send to detect terminal capabilities
-# MikroTik specifically uses these to decide whether to enable colors
-#
-# Response format reference (from VT220 spec):
-# - DA1 (Primary): CSI ? 62 ; Ps... c  where Ps are feature codes
-# - DA2 (Secondary): CSI > Pp ; Pv ; Pc c  where Pp=terminal type, Pv=version, Pc=ROM
-#
-# Feature codes for DA1: 1=132cols, 2=printer, 6=selective-erase, 8=UDK, 9=NRCS
+
+class CursorTracker:
+    """
+    Tracks virtual cursor position based on terminal control sequences.
+
+    MikroTik tests terminal capabilities by moving cursor and querying position.
+    This tracker intercepts movement commands and responds with correct positions,
+    allowing MikroTik to enable colors without the ~10 second detection timeout.
+    """
+
+    def __init__(self, width: int = 120, height: int = 30):
+        self.x = 1  # Column (1-indexed)
+        self.y = 1  # Row (1-indexed)
+        self.width = width
+        self.height = height
+
+    def process_sequence(self, sequence: str) -> Optional[bytes]:
+        """
+        Process a CSI sequence and return response if needed.
+
+        Args:
+            sequence: CSI parameter string (e.g., "6n", "9999B")
+
+        Returns:
+            Response bytes to send, or None if no response needed
+        """
+        # Device Attributes (ESC[c or ESC[0c)
+        if sequence in ['c', '0c']:
+            return b'\x1b[?62;1;2;6;7;8;9c'  # VT220 with features
+
+        # Cursor Position Report (ESC[6n) - most important for MikroTik
+        if sequence == '6n':
+            response = f'\x1b[{self.y};{self.x}R'
+            return response.encode('ascii')
+
+        # Device Status Report (ESC[5n)
+        if sequence == '5n':
+            return b'\x1b[0n'  # Terminal OK
+
+        # Cursor movement commands - update tracked position
+        # ESC[<n>A - Cursor Up
+        match = re.match(r'(\d*)A', sequence)
+        if match:
+            n = int(match.group(1) or 1)
+            self.y = max(1, self.y - n)
+            return None
+
+        # ESC[<n>B - Cursor Down (important: MikroTik uses ESC[9999B)
+        match = re.match(r'(\d*)B', sequence)
+        if match:
+            n = int(match.group(1) or 1)
+            self.y = min(self.height, self.y + n)
+            return None
+
+        # ESC[<n>C - Cursor Forward (Right)
+        match = re.match(r'(\d*)C', sequence)
+        if match:
+            n = int(match.group(1) or 1)
+            self.x = min(self.width, self.x + n)
+            return None
+
+        # ESC[<n>D - Cursor Back (Left)
+        match = re.match(r'(\d*)D', sequence)
+        if match:
+            n = int(match.group(1) or 1)
+            self.x = max(1, self.x - n)
+            return None
+
+        # ESC[<row>;<col>H or ESC[<row>;<col>f - Cursor Position
+        match = re.match(r'(\d*);?(\d*)H', sequence) or re.match(r'(\d*);?(\d*)f', sequence)
+        if match:
+            row = int(match.group(1) or 1)
+            col = int(match.group(2) or 1)
+            self.y = max(1, min(self.height, row))
+            self.x = max(1, min(self.width, col))
+            return None
+
+        # ESC[<n>d - Line Position Absolute
+        match = re.match(r'(\d*)d', sequence)
+        if match:
+            row = int(match.group(1) or 1)
+            self.y = max(1, min(self.height, row))
+            return None
+
+        return None
+
+    def reset(self):
+        """Reset cursor to home position."""
+        self.x = 1
+        self.y = 1
+
+
+# Legacy terminal query patterns (kept for backward compatibility)
+# Note: For MikroTik, use CursorTracker with proactive_terminal_response=True instead
 TERMINAL_QUERIES = {
     # Primary Device Attributes (DA1) - ESC[c or ESC[0c
-    # Response: VT220 with 132-col, printer, selective-erase support
     re.compile(rb'\x1b\[0?c(?!\?)'): b'\x1b[?62;1;2;6;8c',
 
     # Secondary Device Attributes (DA2) - ESC[>c or ESC[>0c
-    # Response: VT220 (1), version 10, no ROM cartridge (0)
     re.compile(rb'\x1b\[>0?c'): b'\x1b[>1;10;0c',
 
     # DECID (ESC Z) - legacy terminal ID request
-    # Response: same as DA1
     re.compile(rb'\x1bZ'): b'\x1b[?62;1;2;6;8c',
 
     # Cursor Position Report (DSR 6) - ESC[6n
-    # Response: cursor at row 1, col 1
+    # Note: This is a fixed response. For accurate position, use CursorTracker
     re.compile(rb'\x1b\[6n'): b'\x1b[1;1R',
 
     # Device Status Report (DSR 5) - ESC[5n
-    # Response: terminal OK
     re.compile(rb'\x1b\[5n'): b'\x1b[0n',
 }
 
@@ -56,6 +137,7 @@ class SSHConfig:
     terminal_type: str = "xterm"
     term_width: int = 80
     term_height: int = 24
+    proactive_terminal_response: bool = False  # Enable for MikroTik to get colors without delay
 
 
 class InteractiveAuthHandler:
@@ -130,6 +212,7 @@ class SSHSession:
         self._manual_disconnect = False
         self._auth_input_future: Optional[asyncio.Future] = None
         self._waiting_for_auth_input = False
+        self._cursor_tracker: Optional[CursorTracker] = None
 
     @property
     def is_connected(self) -> bool:
@@ -232,6 +315,14 @@ class SSHSession:
             self._connected = True
             logger.info(f"SSH connection established (terminal: {self.config.terminal_type})")
 
+            # Initialize cursor tracker for proactive terminal response (MikroTik)
+            if self.config.proactive_terminal_response:
+                self._cursor_tracker = CursorTracker(
+                    width=self.config.term_width,
+                    height=self.config.term_height
+                )
+                logger.info("Proactive terminal response enabled (for MikroTik colors)")
+
             # Start reading output in background
             self._read_task = asyncio.create_task(self._read_output())
 
@@ -248,13 +339,13 @@ class SSHSession:
     async def _read_output(self) -> None:
         """Background task to read and forward terminal output."""
         unexpected_disconnect = False
-        # Track which queries we've already responded to (avoid duplicates)
-        responded_queries: set = set()
-        # Only respond to queries in the first few seconds of connection
-        query_response_window = 5.0  # seconds
         connection_start = asyncio.get_event_loop().time()
 
         try:
+            # CSI sequence pattern for extracting control sequences
+            csi_pattern = re.compile(rb'\x1b\[([^a-zA-Z]*[a-zA-Z])')
+            query_response_window = 5.0  # Only respond to queries in first 5 seconds
+
             while self._connected and self._process:
                 try:
                     # Check if process has exited
@@ -270,17 +361,23 @@ class SSHSession:
                         timeout=0.05
                     )
                     if data:
-                        # Handle terminal queries only in the first few seconds
-                        # Respond BEFORE processing output to minimize latency
+                        # Handle terminal queries
                         elapsed = asyncio.get_event_loop().time() - connection_start
                         if elapsed < query_response_window:
-                            await self._respond_to_terminal_queries_async(data, responded_queries)
+                            if self._cursor_tracker:
+                                # Use CursorTracker for accurate position tracking
+                                await self._respond_with_cursor_tracker(data, csi_pattern)
+                            else:
+                                # Fall back to legacy query response (no duplicate tracking)
+                                await self._respond_to_terminal_queries_legacy(data)
 
-                        # Decode bytes to string, handling encoding errors
-                        try:
-                            text = data.decode('utf-8', errors='replace')
-                        except Exception:
-                            text = data.decode('latin-1', errors='replace')
+                        # Send raw bytes to terminal - pyte can handle bytes directly
+                        # This preserves ANSI escape sequences perfectly
+                        if isinstance(data, bytes):
+                            # Decode as latin-1 (preserves all bytes 0-255 as-is)
+                            text = data.decode('latin-1')
+                        else:
+                            text = data
                         self._output_callback(text)
                     else:
                         # EOF - connection closed (empty bytes or None)
@@ -298,7 +395,7 @@ class SSHSession:
                     # Yield to allow other tasks to run
                     await asyncio.sleep(0)
                     continue
-                except (asyncssh.ChannelClosedError, asyncssh.ConnectionLost, BrokenPipeError):
+                except (asyncssh.ConnectionLost, asyncssh.ProcessError, BrokenPipeError):
                     # Channel/connection closed - normal termination (e.g., exit command)
                     logger.info("SSH channel closed")
                     self._connected = False
@@ -317,35 +414,91 @@ class SSHSession:
             if unexpected_disconnect and self._disconnect_callback:
                 self._disconnect_callback()
 
-    async def _respond_to_terminal_queries_async(self, data: bytes, responded: set) -> None:
+    def _filter_terminal_queries(self, data: bytes) -> bytes:
         """
-        Check for terminal capability queries and send appropriate responses.
-        This is needed for devices like MikroTik that query terminal capabilities
-        before enabling colors.
+        Remove terminal query sequences from data before displaying.
+        These queries (ESC[6n, ESC[c, etc.) are meant for the terminal emulator,
+        not for display to the user.
 
-        Uses async write with drain to ensure immediate delivery.
-        Tracks which queries have been responded to avoid duplicates.
+        Args:
+            data: Raw bytes from server
+
+        Returns:
+            Filtered bytes with queries removed
+        """
+        # Remove common terminal queries (very specific patterns only!)
+        # Device Status Report - ESC[5n
+        data = re.sub(rb'\x1b\[5n', b'', data)
+
+        # Cursor Position Report - ESC[6n
+        data = re.sub(rb'\x1b\[6n', b'', data)
+
+        # Device Attributes - ESC[c or ESC[0c (but NOT ESC[...m color codes!)
+        # Must match EXACTLY: ESC [ optional0 c
+        data = re.sub(rb'\x1b\[0c(?![^\x1b])', b'', data)  # ESC[0c
+        data = re.sub(rb'\x1b\[c(?![^\x1b])', b'', data)   # ESC[c
+
+        # Secondary Device Attributes - ESC[>0c or ESC[>c
+        data = re.sub(rb'\x1b\[>0c', b'', data)
+        data = re.sub(rb'\x1b\[>c', b'', data)
+
+        # DECID - ESC Z
+        data = re.sub(rb'\x1bZ', b'', data)
+
+        return data
+
+    async def _respond_with_cursor_tracker(self, data: bytes, csi_pattern: re.Pattern) -> None:
+        """
+        Use CursorTracker to process CSI sequences and respond to queries.
+        This allows MikroTik to detect terminal capabilities quickly with accurate cursor positions.
 
         Args:
             data: Raw bytes received from remote
-            responded: Set of query patterns already responded to
+            csi_pattern: Compiled regex pattern for extracting CSI sequences
+        """
+        if not self._process or not self._process.stdin or not self._cursor_tracker:
+            return
+
+        try:
+            # Extract all CSI sequences from data
+            for match in csi_pattern.finditer(data):
+                seq_bytes = match.group(1)
+                try:
+                    seq_str = seq_bytes.decode('ascii')
+                except UnicodeDecodeError:
+                    continue
+
+                # Process sequence and get response if needed
+                response = self._cursor_tracker.process_sequence(seq_str)
+                if response:
+                    # Send response immediately
+                    logger.debug(f"CursorTracker: Query ESC[{seq_str} -> Response {response!r}")
+                    self._process.stdin.write(response)
+                    # Note: Not awaiting drain() here for performance
+                    # The buffer should handle multiple small responses
+
+            # Drain once after processing all sequences
+            await self._process.stdin.drain()
+
+        except Exception as e:
+            logger.warning(f"Error in cursor tracker response: {e}")
+
+    async def _respond_to_terminal_queries_legacy(self, data: bytes) -> None:
+        """
+        Legacy terminal query response (without cursor tracking).
+        Used when proactive_terminal_response is disabled.
+
+        Args:
+            data: Raw bytes received from remote
         """
         if not self._process or not self._process.stdin:
             return
 
         for pattern, response in TERMINAL_QUERIES.items():
-            # Skip if we've already responded to this query type
-            pattern_id = pattern.pattern
-            if pattern_id in responded:
-                continue
-
             if pattern.search(data):
-                logger.info(f"Terminal query detected: {pattern.pattern!r}, responding with: {response!r}")
                 try:
-                    # Write and flush immediately to avoid MikroTik timeout
                     self._process.stdin.write(response)
                     await self._process.stdin.drain()
-                    responded.add(pattern_id)
                 except Exception as e:
                     logger.warning(f"Failed to send terminal query response: {e}")
 
@@ -405,6 +558,12 @@ class SSHSession:
             self._process.change_terminal_size(width, height)
             self.config.term_width = width
             self.config.term_height = height
+
+            # Update cursor tracker dimensions
+            if self._cursor_tracker:
+                self._cursor_tracker.width = width
+                self._cursor_tracker.height = height
+
             logger.debug(f"Terminal resized to {width}x{height}")
         except Exception as e:
             logger.error(f"Error resizing terminal: {e}")
