@@ -617,25 +617,17 @@ class MainWindow(QMainWindow):
         dialog = QuickConnectDialog(parent=self)
         if dialog.exec():
             data = dialog.get_connection_data()
-            cols, rows = self._terminal.get_terminal_size()
 
-            # Enable proactive terminal response for MikroTik (fast colors without delay)
-            device_type = data.get("device_type")
-            enable_proactive = device_type == "MikroTik"
-
-            config = SSHConfig(
+            # Use unified connection method
+            self._initiate_connection(
                 host=data["host"],
                 port=data["port"],
                 username=data["username"],
                 password=data["password"],
                 terminal_type=data["terminal_type"],
-                term_width=cols,
-                term_height=rows,
-                proactive_terminal_response=enable_proactive
+                device_type=data.get("device_type"),
+                host_id=None  # Quick connect has no saved host ID
             )
-
-            self._current_device_type = device_type
-            asyncio.ensure_future(self._connect_async(config))
 
     @Slot()
     def _on_add_host_clicked(self) -> None:
@@ -679,6 +671,69 @@ class MainWindow(QMainWindow):
 
         menu.exec(self._hosts_list.mapToGlobal(position))
 
+    def _initiate_connection(
+        self,
+        host: str,
+        port: int,
+        username: str,
+        password: str,
+        terminal_type: str,
+        device_type: Optional[str],
+        host_id: Optional[str] = None
+    ) -> None:
+        """
+        Unified connection method for both saved hosts and quick connect.
+
+        Handles:
+        - Checking if credentials need to be prompted via terminal
+        - Setting up proactive terminal response for MikroTik
+        - Starting pre-login mode or direct connection
+
+        Args:
+            host: Host address or IP
+            port: SSH port
+            username: Username (empty string triggers pre-login prompt)
+            password: Password (empty string with username uses keyboard-interactive)
+            terminal_type: Terminal type (xterm, xterm-256color, vt100)
+            device_type: Device type for AI context (Linux, MikroTik, etc.)
+            host_id: Host ID for saved hosts (None for quick connect)
+        """
+        cols, rows = self._terminal.get_terminal_size()
+
+        self._current_host_id = host_id
+        self._current_device_type = device_type
+
+        # Check if we need to ask for credentials in terminal (like PuTTY)
+        need_username = not username
+
+        if need_username:
+            # Store pending connection data and start pre-login mode
+            self._pending_connection = {
+                "host": host,
+                "port": port,
+                "terminal_type": terminal_type,
+                "term_width": cols,
+                "term_height": rows,
+            }
+            self._terminal.start_prelogin(need_username=True, need_password=True)
+            return
+
+        # Has username - connect directly (password via keyboard-interactive if needed)
+        enable_proactive = device_type == "MikroTik"
+
+        config = SSHConfig(
+            host=host,
+            port=port,
+            username=username,
+            password=password or "",
+            terminal_type=terminal_type,
+            term_width=cols,
+            term_height=rows,
+            proactive_terminal_response=enable_proactive
+        )
+
+        asyncio.ensure_future(self._connect_async(config))
+
     def _connect_to_host(self, host_id: str) -> None:
         """Connect to a saved host."""
         host = self._hosts_manager.get_by_id(host_id)
@@ -700,48 +755,17 @@ class MainWindow(QMainWindow):
         # Get saved password if available (may be None)
         password = self._hosts_manager.get_password(host_id)
 
-        self._current_host_id = host_id
-        self._current_device_type = host.device_type
-        cols, rows = self._terminal.get_terminal_size()
-
-        # Check if we need to ask for credentials locally (like PuTTY)
-        need_username = not host.username
-        need_password = not password and host.username  # Only if has username but no password
-
-        if need_username:
-            # Store pending connection data and start pre-login mode
-            self._pending_connection = {
-                "host": host.host,
-                "port": host.port,
-                "terminal_type": host.terminal_type,
-                "term_width": cols,
-                "term_height": rows,
-            }
-            self._terminal.start_prelogin(need_username=True, need_password=True)
-            return
-
-        # Has username - connect directly (password will be asked via keyboard-interactive if needed)
-        # Use get_effective_username() to apply +ct suffix for MikroTik if configured
-
-        # Enable proactive terminal response for MikroTik (fast colors without delay)
-        # Only when NOT using the old +ct workaround (disable_terminal_detection)
-        enable_proactive = (
-            host.device_type == "MikroTik" and
-            not host.disable_terminal_detection
-        )
-
-        config = SSHConfig(
+        # Use unified connection method
+        # get_effective_username() applies +ct suffix for MikroTik if configured (deprecated)
+        self._initiate_connection(
             host=host.host,
             port=host.port,
             username=host.get_effective_username(),
             password=password or "",
             terminal_type=host.terminal_type,
-            term_width=cols,
-            term_height=rows,
-            proactive_terminal_response=enable_proactive
+            device_type=host.device_type,
+            host_id=host_id
         )
-
-        asyncio.ensure_future(self._connect_async(config))
 
     async def _disconnect_and_connect(self, host_id: str) -> None:
         """Disconnect current session and connect to new host."""
