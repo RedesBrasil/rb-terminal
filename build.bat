@@ -15,7 +15,7 @@ if errorlevel 1 (
 
 REM Instalar dependencias
 echo Instalando dependencias...
-pip install -r requirements.txt pyinstaller
+python -m pip install -r requirements.txt pyinstaller
 if errorlevel 1 (
     echo ERRO: Falha ao instalar dependencias
     pause
@@ -24,7 +24,7 @@ if errorlevel 1 (
 
 echo.
 echo Compilando executavel...
-pyinstaller build.spec --clean
+python -m PyInstaller build.spec --clean
 if errorlevel 1 (
     echo ERRO: Falha na compilacao
     pause
