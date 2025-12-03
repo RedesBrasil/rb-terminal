@@ -886,6 +886,7 @@ class MainWindow(QMainWindow):
                 "term_height": rows,
             }
             session.terminal.start_prelogin(need_username=True, need_password=True)
+            self._show_terminal_view()
             return
 
         # Has username - connect directly (password via keyboard-interactive if needed)

@@ -81,6 +81,10 @@ Arquitetura: `QStackedWidget` alterna entre `HostsView` (index 0) e área de ter
 
 Widget de terminal com emulação pyte (VT100/xterm). Signals: `input_entered`, `reconnect_requested`, `prelogin_credentials`, `prelogin_cancelled`. Flags: `_disconnected_mode`, `_has_content`, `_prelogin_mode`.
 
+### gui/tags_widget.py
+
+Widget de tags com autocomplete. `FlowLayout` customizado para wrap automático. `TagChip` com tamanho fixo calculado via `QFontMetrics`. Completer reaparece automaticamente após seleção via `QTimer.singleShot`.
+
 ## Notas Técnicas
 
 1. **Async:** Todo código SSH/IA deve ser async (qasync integra Qt + asyncio)
