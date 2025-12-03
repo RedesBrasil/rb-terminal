@@ -19,14 +19,15 @@ from PySide6.QtGui import QCloseEvent, QAction, QColor, QPainter, QPixmap, QIcon
 
 from core.ssh_session import SSHSession, SSHConfig
 from core.agent import create_agent, SSHAgent
-from core.hosts import HostsManager
-from core.settings import get_settings_manager
+from core.data_manager import get_data_manager, DataManager
 from gui.terminal_widget import TerminalWidget
 from gui.chat_widget import ChatWidget
 from gui.hosts_dialog import HostDialog, PasswordPromptDialog, QuickConnectDialog
 from gui.settings_dialog import SettingsDialog
 from gui.tab_session import TabSession
 from gui.hosts_view import HostsView
+from gui.setup_dialog import SetupDialog
+from gui.unlock_dialog import UnlockDialog
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +50,15 @@ class MainWindow(QMainWindow):
 
         self._resize_timer: Optional[QTimer] = None
         self._chat_visible: bool = False  # Chat starts hidden
-        self._settings_manager = get_settings_manager()
-        self._chat_position = self._settings_manager.get_chat_position()
+
+        # Initialize data manager and handle setup/unlock
+        self._data_manager = get_data_manager()
+        if not self._handle_startup():
+            # User cancelled setup/unlock - exit
+            import sys
+            sys.exit(0)
+
+        self._chat_position = self._data_manager.get_chat_position()
         self._splitter_sizes = {
             "bottom": [700, 300],
             "left": [300, 700],
@@ -62,9 +70,6 @@ class MainWindow(QMainWindow):
         self._output_timer = QTimer()
         self._output_timer.setSingleShot(True)
         self._output_timer.timeout.connect(self._flush_output_buffer)
-
-        # Initialize hosts manager
-        self._hosts_manager = HostsManager()
 
         # Status icons for tabs
         self._status_icons = {}
@@ -81,6 +86,61 @@ class MainWindow(QMainWindow):
 
         # Start maximized
         self.showMaximized()
+
+    def _handle_startup(self) -> bool:
+        """
+        Handle application startup - setup or unlock as needed.
+
+        Returns:
+            True if startup successful, False if user cancelled
+        """
+        dm = self._data_manager
+
+        # Case 1: First run (no data.json)
+        if dm.is_first_run():
+            dialog = SetupDialog(self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return False
+
+            password = dialog.get_master_password()
+            if password:
+                dm.setup_master_password(password)
+            else:
+                dm.setup_no_password()
+
+        # Case 2: Needs migration from legacy files
+        elif dm.needs_migration():
+            dm.load()  # This triggers migration
+            # Optionally offer to set master password after migration
+            reply = QMessageBox.question(
+                self,
+                "Migracao Concluida",
+                "Dados migrados com sucesso!\n\n"
+                "Deseja definir uma senha mestra para proteger suas senhas?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply == QMessageBox.StandardButton.Yes:
+                dialog = SetupDialog(self)
+                if dialog.exec() == QDialog.DialogCode.Accepted:
+                    password = dialog.get_master_password()
+                    if password:
+                        dm.change_master_password("", password)
+
+        # Case 3: Has master password but no cached session (new machine)
+        elif dm.needs_unlock():
+            error_msg = None
+            while True:
+                dialog = UnlockDialog(self, error_message=error_msg)
+                if dialog.exec() != QDialog.DialogCode.Accepted:
+                    return False
+
+                if dm.unlock(dialog.get_password()):
+                    break
+                error_msg = "Senha incorreta. Tente novamente."
+
+        # Load data (uses cached session if available)
+        dm.load()
+        return True
 
     def _create_status_icons(self) -> None:
         """Create status icons for tab states."""
@@ -123,7 +183,7 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self._stacked_widget)
 
         # Page 0: Hosts view (main screen when not connected)
-        self._hosts_view = HostsView(self._hosts_manager)
+        self._hosts_view = HostsView(self._data_manager)
         self._hosts_view.connect_requested.connect(self._connect_to_host)
         self._hosts_view.edit_requested.connect(self._edit_host)
         self._hosts_view.delete_requested.connect(self._delete_host)
@@ -303,7 +363,7 @@ class MainWindow(QMainWindow):
 
     def _apply_settings_changes(self) -> None:
         """Apply settings that might impact layout."""
-        new_position = self._settings_manager.get_chat_position()
+        new_position = self._data_manager.get_chat_position()
         if new_position != self._chat_position:
             self._chat_position = new_position
             self._update_chat_panel_style()
@@ -827,7 +887,7 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_add_host_clicked(self) -> None:
         """Handle add host button click."""
-        dialog = HostDialog(self._hosts_manager, parent=self)
+        dialog = HostDialog(self._data_manager, parent=self)
         if dialog.exec():
             self._refresh_hosts_list()
 
@@ -904,7 +964,7 @@ class MainWindow(QMainWindow):
 
     def _connect_to_host(self, host_id: str) -> None:
         """Connect to a saved host. Opens new tab if current is connected."""
-        host = self._hosts_manager.get_by_id(host_id)
+        host = self._data_manager.get_host_by_id(host_id)
         if not host:
             return
 
@@ -918,7 +978,7 @@ class MainWindow(QMainWindow):
             session = self._create_new_tab()
 
         # Get saved password if available (may be None)
-        password = self._hosts_manager.get_password(host_id)
+        password = self._data_manager.get_password(host_id)
 
         # Use unified connection method
         # get_effective_username() applies +ct suffix for MikroTik if configured (deprecated)
@@ -936,17 +996,17 @@ class MainWindow(QMainWindow):
 
     def _edit_host(self, host_id: str) -> None:
         """Edit a saved host."""
-        host = self._hosts_manager.get_by_id(host_id)
+        host = self._data_manager.get_host_by_id(host_id)
         if not host:
             return
 
-        dialog = HostDialog(self._hosts_manager, host=host, parent=self)
+        dialog = HostDialog(self._data_manager, host=host, parent=self)
         if dialog.exec():
             self._refresh_hosts_list()
 
     def _delete_host(self, host_id: str) -> None:
         """Delete a saved host."""
-        host = self._hosts_manager.get_by_id(host_id)
+        host = self._data_manager.get_host_by_id(host_id)
         if not host:
             return
 
@@ -958,7 +1018,7 @@ class MainWindow(QMainWindow):
         )
 
         if reply == QMessageBox.StandardButton.Yes:
-            self._hosts_manager.delete(host_id)
+            self._data_manager.delete_host(host_id)
             self._refresh_hosts_list()
 
     def _create_agent_for_session(self, session: TabSession) -> None:

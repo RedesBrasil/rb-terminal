@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, Signal
 
-from core.hosts import Host, HostsManager
+from core.data_manager import DataManager, Host
 from core.device_types import get_device_types_manager
 from gui.tags_widget import TagsWidget
 
@@ -24,7 +24,7 @@ class HostDialog(QDialog):
 
     def __init__(
         self,
-        hosts_manager: HostsManager,
+        data_manager: DataManager,
         host: Optional[Host] = None,
         parent=None
     ):
@@ -32,12 +32,12 @@ class HostDialog(QDialog):
         Initialize host dialog.
 
         Args:
-            hosts_manager: The hosts manager instance
+            data_manager: The data manager instance
             host: Host to edit (None for new host)
             parent: Parent widget
         """
         super().__init__(parent)
-        self._hosts_manager = hosts_manager
+        self._data_manager = data_manager
         self._host = host
         self._is_edit_mode = host is not None
 
@@ -307,7 +307,7 @@ class HostDialog(QDialog):
             if self._is_edit_mode:
                 # Update existing host
                 clear_password = hasattr(self, '_clear_pass_cb') and self._clear_pass_cb.isChecked()
-                self._hosts_manager.update(
+                self._data_manager.update_host(
                     host_id=self._host.id,
                     name=name,
                     host=host,
@@ -322,7 +322,7 @@ class HostDialog(QDialog):
                 )
             else:
                 # Add new host
-                self._hosts_manager.add(
+                self._data_manager.add_host(
                     name=name,
                     host=host,
                     port=port,

@@ -5,6 +5,7 @@ Fetches available models from OpenRouter API.
 """
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 import httpx
@@ -12,11 +13,12 @@ import httpx
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QGroupBox, QFormLayout, QMessageBox, QListWidget,
-    QListWidgetItem, QApplication, QSpinBox, QComboBox
+    QListWidgetItem, QApplication, QSpinBox, QComboBox, QFileDialog,
+    QFrame
 )
 from PySide6.QtCore import Qt, QThread, Signal, QEvent
 
-from core.settings import get_settings_manager
+from core.data_manager import get_data_manager
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +62,7 @@ class SettingsDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._settings_manager = get_settings_manager()
+        self._data_manager = get_data_manager()
         self._all_models: list[tuple[str, str]] = []  # (name, id)
         self._model_fetcher: Optional[ModelFetcher] = None
         self._setup_ui()
@@ -137,6 +139,54 @@ class SettingsDialog(QDialog):
         api_layout.addRow("", link_label)
 
         layout.addWidget(api_group)
+
+        # Storage Group
+        storage_group = QGroupBox("Armazenamento de Dados")
+        storage_layout = QFormLayout(storage_group)
+
+        # Current path display
+        self._data_path_label = QLabel()
+        self._data_path_label.setWordWrap(True)
+        self._data_path_label.setStyleSheet("color: #888888;")
+        storage_layout.addRow("Local atual:", self._data_path_label)
+
+        # Change path button
+        change_path_btn = QPushButton("Alterar Local...")
+        change_path_btn.setToolTip(
+            "Use um caminho sincronizado (Dropbox, OneDrive, Google Drive)\n"
+            "para acessar seus hosts em multiplos computadores."
+        )
+        change_path_btn.clicked.connect(self._on_change_data_path)
+        storage_layout.addRow("", change_path_btn)
+
+        # Security status
+        self._security_label = QLabel()
+        storage_layout.addRow("Seguranca:", self._security_label)
+
+        # Change master password button
+        self._change_password_btn = QPushButton("Alterar Senha Mestra...")
+        self._change_password_btn.clicked.connect(self._on_change_master_password)
+        storage_layout.addRow("", self._change_password_btn)
+
+        layout.addWidget(storage_group)
+
+        # Backup Group
+        backup_group = QGroupBox("Backup")
+        backup_layout = QHBoxLayout(backup_group)
+
+        export_btn = QPushButton("Exportar Dados...")
+        export_btn.setToolTip("Exportar configuracoes e hosts para arquivo")
+        export_btn.clicked.connect(self._on_export)
+        backup_layout.addWidget(export_btn)
+
+        import_btn = QPushButton("Importar Dados...")
+        import_btn.setToolTip("Importar configuracoes e hosts de arquivo")
+        import_btn.clicked.connect(self._on_import)
+        backup_layout.addWidget(import_btn)
+
+        backup_layout.addStretch()
+
+        layout.addWidget(backup_group)
 
         # Buttons
         buttons_layout = QHBoxLayout()
@@ -327,30 +377,40 @@ class SettingsDialog(QDialog):
 
     def _load_current_settings(self) -> None:
         """Load current settings into the form."""
-        settings = self._settings_manager.settings
+        dm = self._data_manager
 
         # API Key
-        self._api_key_edit.setText(settings.openrouter_api_key)
+        self._api_key_edit.setText(dm.get_api_key())
 
         # Model - show current model ID in search field
-        current_model = settings.default_model
+        current_model = dm.get_model()
         self._model_search.setText(current_model)
         self._model_search.setProperty("model_id", current_model)
 
         # Iterations
-        try:
-            iter_value = int(getattr(settings, "max_agent_iterations", 10))
-        except (TypeError, ValueError):
-            iter_value = 10
-        self._iteration_spin.setValue(max(1, min(100, iter_value)))
+        self._iteration_spin.setValue(dm.get_max_iterations())
 
         # Chat position
-        chat_position = getattr(settings, "chat_position", "bottom")
+        chat_position = dm.get_chat_position()
         index = self._chat_position_combo.findData(chat_position)
         if index != -1:
             self._chat_position_combo.setCurrentIndex(index)
         else:
             self._chat_position_combo.setCurrentIndex(0)
+
+        # Data path
+        data_path = dm.get_data_path()
+        self._data_path_label.setText(str(data_path))
+
+        # Security status
+        if dm.has_master_password():
+            self._security_label.setText("Com senha mestra")
+            self._security_label.setStyleSheet("color: #4ec9b0;")
+            self._change_password_btn.setText("Alterar Senha Mestra...")
+        else:
+            self._security_label.setText("Sem senha mestra (senhas em texto plano)")
+            self._security_label.setStyleSheet("color: #f14c4c;")
+            self._change_password_btn.setText("Definir Senha Mestra...")
 
     def _toggle_api_key_visibility(self) -> None:
         """Toggle API key visibility."""
@@ -397,27 +457,173 @@ class SettingsDialog(QDialog):
             return
 
         # Update settings
-        self._settings_manager.set_api_key(api_key)
-        self._settings_manager.set_model(model)
-        self._settings_manager.set_max_iterations(self._iteration_spin.value())
+        dm = self._data_manager
+        dm.set_api_key(api_key)
+        dm.set_model(model)
+        dm.set_max_iterations(self._iteration_spin.value())
         chat_position = self._chat_position_combo.currentData()
         if chat_position:
-            self._settings_manager.set_chat_position(chat_position)
+            dm.set_chat_position(chat_position)
 
-        # Save to file
-        if self._settings_manager.save():
-            QMessageBox.information(
+        QMessageBox.information(
+            self,
+            "Configuracoes Salvas",
+            "As configuracoes foram salvas com sucesso."
+        )
+        self.accept()
+
+    def _on_change_data_path(self) -> None:
+        """Handle change data path button click."""
+        current_path = self._data_manager.get_data_path().parent
+        new_dir = QFileDialog.getExistingDirectory(
+            self,
+            "Selecionar Diretorio para Dados",
+            str(current_path),
+            QFileDialog.Option.ShowDirsOnly
+        )
+
+        if not new_dir:
+            return
+
+        new_path = Path(new_dir)
+
+        reply = QMessageBox.question(
+            self,
+            "Confirmar Alteracao",
+            f"Mover dados para:\n{new_path}\n\n"
+            "Os dados serao copiados para o novo local.\n"
+            "Deseja continuar?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                self._data_manager.set_data_path(new_path)
+                self._data_path_label.setText(str(self._data_manager.get_data_path()))
+                QMessageBox.information(
+                    self,
+                    "Sucesso",
+                    "Local dos dados alterado com sucesso."
+                )
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Erro",
+                    f"Falha ao mover dados:\n{str(e)}"
+                )
+
+    def _on_change_master_password(self) -> None:
+        """Handle change master password button click."""
+        from gui.change_password_dialog import ChangePasswordDialog
+
+        has_password = self._data_manager.has_master_password()
+        dialog = ChangePasswordDialog(has_current_password=has_password, parent=self)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            old_password = dialog.get_old_password()
+            new_password = dialog.get_new_password()
+
+            if self._data_manager.change_master_password(old_password, new_password):
+                self._load_current_settings()  # Refresh display
+                QMessageBox.information(
+                    self,
+                    "Sucesso",
+                    "Senha mestra alterada com sucesso."
+                )
+            else:
+                QMessageBox.critical(
+                    self,
+                    "Erro",
+                    "Senha atual incorreta."
+                )
+
+    def _on_export(self) -> None:
+        """Handle export button click."""
+        from gui.export_import_dialogs import ExportDialog
+
+        dialog = ExportDialog(parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            options = dialog.get_options()
+
+            # Get file path
+            file_path, _ = QFileDialog.getSaveFileName(
                 self,
-                "Configuracoes Salvas",
-                "As configuracoes foram salvas com sucesso."
+                "Exportar Dados",
+                "rb-terminal-backup.json",
+                "JSON Files (*.json)"
             )
-            self.accept()
-        else:
-            QMessageBox.critical(
-                self,
-                "Erro",
-                "Falha ao salvar as configuracoes."
-            )
+
+            if not file_path:
+                return
+
+            try:
+                self._data_manager.export_data(
+                    path=Path(file_path),
+                    include_settings=options["include_settings"],
+                    include_hosts=options["include_hosts"],
+                    include_passwords=options["include_passwords"],
+                    export_password=options.get("export_password")
+                )
+                QMessageBox.information(
+                    self,
+                    "Sucesso",
+                    f"Dados exportados para:\n{file_path}"
+                )
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Erro",
+                    f"Falha ao exportar:\n{str(e)}"
+                )
+
+    def _on_import(self) -> None:
+        """Handle import button click."""
+        from gui.export_import_dialogs import ImportDialog
+
+        # Get file path first
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Importar Dados",
+            "",
+            "JSON Files (*.json)"
+        )
+
+        if not file_path:
+            return
+
+        dialog = ImportDialog(Path(file_path), parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            options = dialog.get_options()
+
+            try:
+                result = self._data_manager.import_data(
+                    path=Path(file_path),
+                    import_password=options.get("import_password"),
+                    merge=options["merge"]
+                )
+
+                if result.success:
+                    msg = f"Importacao concluida!\n\n"
+                    msg += f"Hosts importados: {result.hosts_imported}\n"
+                    if result.hosts_skipped > 0:
+                        msg += f"Hosts ignorados: {result.hosts_skipped}\n"
+                    if result.settings_imported:
+                        msg += "Configuracoes importadas: Sim"
+
+                    QMessageBox.information(self, "Sucesso", msg)
+                    self._load_current_settings()  # Refresh
+                else:
+                    QMessageBox.critical(
+                        self,
+                        "Erro",
+                        f"Falha ao importar:\n{result.error}"
+                    )
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Erro",
+                    f"Falha ao importar:\n{str(e)}"
+                )
 
     def closeEvent(self, event) -> None:
         """Handle dialog close."""

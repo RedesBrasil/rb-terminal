@@ -11,8 +11,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon
 
-from core.hosts import Host, HostsManager
-from core.settings import get_settings_manager
+from core.data_manager import DataManager, Host
 from gui.host_card import HostCard, HostListItem, AddHostCard
 
 
@@ -34,12 +33,11 @@ class HostsView(QWidget):
     add_requested = Signal()
     quick_connect_requested = Signal()
 
-    def __init__(self, hosts_manager: HostsManager, parent=None):
+    def __init__(self, data_manager: DataManager, parent=None):
         super().__init__(parent)
-        self._hosts_manager = hosts_manager
-        self._settings_manager = get_settings_manager()
-        self._view_mode = self._settings_manager.get_hosts_view_mode()
-        self._sort_by = self._settings_manager.get_hosts_sort_by()
+        self._data_manager = data_manager
+        self._view_mode = self._data_manager.get_hosts_view_mode()
+        self._sort_by = self._data_manager.get_hosts_sort_by()
         self._search_text = ""
         self._selected_tags: list[str] = []
         self._host_widgets: list = []
@@ -275,7 +273,7 @@ class HostsView(QWidget):
         """)
 
         # Get all available tags
-        available_tags = self._settings_manager.get_tags()
+        available_tags = self._data_manager.get_tags()
 
         if not available_tags:
             action = menu.addAction("Nenhuma tag disponivel")
@@ -349,13 +347,13 @@ class HostsView(QWidget):
     def _on_sort_changed(self, index: int):
         """Handle sort selection change."""
         self._sort_by = self._sort_combo.itemData(index)
-        self._settings_manager.set_hosts_sort_by(self._sort_by)
+        self._data_manager.set_hosts_sort_by(self._sort_by)
         self.refresh()
 
     def _set_view_mode(self, mode: str):
         """Set the view mode (cards or list)."""
         self._view_mode = mode
-        self._settings_manager.set_hosts_view_mode(mode)
+        self._data_manager.set_hosts_view_mode(mode)
         self._cards_btn.setChecked(mode == "cards")
         self._list_btn.setChecked(mode == "list")
         self.refresh()
@@ -404,7 +402,7 @@ class HostsView(QWidget):
                 item.widget().deleteLater()
 
         # Get filtered and sorted hosts
-        hosts = self._hosts_manager.get_all()
+        hosts = self._data_manager.get_hosts()
         hosts = self._filter_hosts(hosts)
         hosts = self._sort_hosts(hosts)
 

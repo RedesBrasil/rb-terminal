@@ -11,8 +11,8 @@ Terminal SSH desktop com agente IA integrado. A IA executa comandos no dispositi
 | LLM Provider    | OpenRouter              |
 | SSH             | asyncssh                |
 | Terminal        | pyte (emulação VT100)   |
-| Criptografia    | cryptography (Fernet)   |
-| Persistência    | JSON local              |
+| Criptografia    | cryptography (PBKDF2)   |
+| Persistência    | JSON local unificado    |
 | Async           | qasync (Qt + asyncio)   |
 
 ## Estrutura do Projeto
@@ -23,9 +23,10 @@ rb-terminal/
 ├── core/
 │   ├── agent.py                # Agente IA com OpenRouter API
 │   ├── ssh_session.py          # Wrapper asyncssh com PTY
-│   ├── hosts.py                # CRUD hosts (modelo + persistência JSON)
-│   ├── crypto.py               # Criptografia de senhas (Fernet)
-│   ├── settings.py             # Gerenciador de configurações (singleton)
+│   ├── data_manager.py         # Gerenciador unificado de dados (singleton)
+│   ├── crypto.py               # Criptografia PBKDF2 + master password
+│   ├── hosts.py                # [LEGADO] Mantido para referência
+│   ├── settings.py             # [LEGADO] Mantido para referência
 │   └── device_types.py         # Gerenciador de tipos de dispositivos
 ├── gui/
 │   ├── main_window.py          # Janela principal com hosts view + abas + chat
@@ -36,7 +37,11 @@ rb-terminal/
 │   ├── host_card.py            # Widgets de card e item de lista
 │   ├── tags_widget.py          # Widget de tags com autocomplete
 │   ├── hosts_dialog.py         # Dialogs de hosts
-│   └── settings_dialog.py      # Dialog de configurações
+│   ├── settings_dialog.py      # Dialog de configurações
+│   ├── setup_dialog.py         # Dialog de primeira execução
+│   ├── unlock_dialog.py        # Dialog de desbloqueio
+│   ├── change_password_dialog.py # Dialog para alterar senha mestra
+│   └── export_import_dialogs.py  # Dialogs de exportação/importação
 ├── config/
 │   └── settings.json           # Configurações fallback
 └── requirements.txt
@@ -46,12 +51,48 @@ rb-terminal/
 
 Salvos em `~/.rb-terminal/` (ou `%APPDATA%\.rb-terminal` no Windows):
 
-- `hosts.json` - Hosts salvos com senhas criptografadas
+- `data.json` - Arquivo unificado com hosts, settings e config de segurança
+- `pointer.json` - Aponta para localização customizada do data.json (ex: Dropbox)
+- `.session` - Cache da chave derivada para sessão atual
 - `device_types.json` - Tipos de dispositivos customizados
-- `settings.json` - Configurações do usuário (API key, modelo, chat_position, available_tags, hosts_view_mode, hosts_sort_by)
-- `.key` - Chave Fernet
+
+### Estrutura do data.json
+
+```json
+{
+  "version": "1.0",
+  "security": {
+    "has_master_password": true,
+    "password_salt": "base64...",
+    "password_hash": "base64..."
+  },
+  "settings": {
+    "openrouter_api_key": "sk-...",
+    "default_model": "google/gemini-2.5-flash",
+    "max_agent_iterations": 10,
+    "chat_position": "bottom",
+    "available_tags": ["prod", "dev"],
+    "hosts_view_mode": "cards",
+    "hosts_sort_by": "name"
+  },
+  "hosts": [...]
+}
+```
 
 ## Componentes Principais
+
+### core/data_manager.py
+
+Singleton `get_data_manager()` que unifica hosts e settings. Gerencia:
+- Criptografia com master password opcional (PBKDF2 600k iterações)
+- Cache de sessão para evitar digitar senha toda vez
+- Caminho customizável via pointer.json (sincronização Dropbox/OneDrive)
+- Export/import com senha de proteção opcional
+- Migração automática de arquivos legados
+
+### core/crypto.py
+
+`CryptoManager` para criptografia PBKDF2. `LegacyCryptoManager` para migração de dados antigos (Fernet). Métodos principais: `encrypt()`, `decrypt()`, `hash_password()`, `verify_password()`.
 
 ### core/agent.py
 
@@ -61,29 +102,21 @@ Agente IA que executa comandos SSH via OpenRouter API. Recebe função `execute_
 
 Wrapper asyncssh com PTY. `SSHConfig` define host, port, username, password, terminal_type, dimensões. `SSHSession` recebe config, output_callback e disconnect_callback. Features: auto-resposta a terminal queries, detecção de desconexão, autenticação interativa.
 
-### core/settings.py
-
-Singleton `get_settings_manager()` para configurações com persistência. Métodos: `get_api_key()`, `get_model()`, `set_api_key()`, `get_tags()`, `add_tag()`, `save()`.
-
-### core/hosts.py
-
-Modelo `Host` com campos: id, name, host, port, username, password_encrypted, terminal_type, device_type, tags, created_at. `HostsManager` para CRUD.
-
-### gui/tab_session.py
-
-Dataclass `TabSession` encapsula estado de cada aba: id (UUID), terminal, ssh_session, agent, config (para reconexão), pending_connection, host_id, host_name, device_type, output_buffer, connection_status.
-
 ### gui/main_window.py
 
-Arquitetura: `QStackedWidget` alterna entre `HostsView` (index 0) e área de terminal (index 1). `_sessions: Dict[str, TabSession]` por tab_id, `_tab_widget: QTabWidget`. Signals thread-safe: `_ssh_output_received(tab_id, data)`, `_unexpected_disconnect(tab_id)`. Fluxo de conexão: `_connect_to_host()` → `_initiate_connection_for_session()` → `_connect_session_async()` → `_create_agent_for_session()`.
+Arquitetura: `QStackedWidget` alterna entre `HostsView` (index 0) e área de terminal (index 1). `_sessions: Dict[str, TabSession]` por tab_id, `_tab_widget: QTabWidget`. Signals thread-safe: `_ssh_output_received(tab_id, data)`, `_unexpected_disconnect(tab_id)`. Fluxo de inicialização: `_handle_startup()` → SetupDialog ou UnlockDialog se necessário → `DataManager.load()`.
 
-### gui/terminal_widget.py
+### gui/setup_dialog.py
 
-Widget de terminal com emulação pyte (VT100/xterm). Signals: `input_entered`, `reconnect_requested`, `prelogin_credentials`, `prelogin_cancelled`. Flags: `_disconnected_mode`, `_has_content`, `_prelogin_mode`.
+Dialog de primeira execução. Permite escolher entre usar senha mestra (recomendado) ou continuar sem proteção.
 
-### gui/tags_widget.py
+### gui/unlock_dialog.py
 
-Widget de tags com autocomplete. `FlowLayout` customizado para wrap automático. `TagChip` com tamanho fixo calculado via `QFontMetrics`. Completer reaparece automaticamente após seleção via `QTimer.singleShot`.
+Dialog para desbloquear quando há senha mestra mas sem sessão cacheada (novo computador ou sessão expirada).
+
+### gui/settings_dialog.py
+
+Dialog de configurações com seções: API OpenRouter, Armazenamento (caminho customizado, segurança), Backup (export/import).
 
 ## Notas Técnicas
 
@@ -92,3 +125,5 @@ Widget de tags com autocomplete. `FlowLayout` customizado para wrap automático.
 3. **Output buffering:** SSH output é bufferizado (10ms) antes de renderizar
 4. **Reconexão:** `session.config` guarda última config para reconexão com R
 5. **Terminal queries:** Respondidas automaticamente nos primeiros 5s de conexão
+6. **Segurança:** PBKDF2 com 600k iterações (OWASP 2024+), salt de 32 bytes
+7. **Migração:** Arquivos legados (hosts.json, settings.json, .key) são migrados automaticamente

@@ -9,7 +9,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal, QStringListModel, QRect, QSize, QPoint, QTimer
 from PySide6.QtGui import QFocusEvent
 
-from core.settings import get_settings_manager
+from core.data_manager import get_data_manager
 
 
 class FlowLayout(QLayout):
@@ -199,7 +199,7 @@ class TagsWidget(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._settings_manager = get_settings_manager()
+        self._data_manager = get_data_manager()
         self._selected_tags: list[str] = []
         self._chip_widgets: dict[str, TagChip] = {}
         self._setup_ui()
@@ -310,8 +310,8 @@ class TagsWidget(QWidget):
         self._selected_tags.append(tag)
 
         # Save new tag to settings if not already there
-        if tag not in self._settings_manager.get_tags():
-            self._settings_manager.add_tag(tag)
+        if tag not in self._data_manager.get_tags():
+            self._data_manager.add_tag(tag)
             self._update_completer()
 
         # Create chip widget
@@ -352,7 +352,7 @@ class TagsWidget(QWidget):
 
     def _update_completer(self):
         """Update completer with available tags (excluding selected)."""
-        available = self._settings_manager.get_tags()
+        available = self._data_manager.get_tags()
         filtered = [t for t in available if t not in self._selected_tags]
         self._completer_model.setStringList(filtered)
 

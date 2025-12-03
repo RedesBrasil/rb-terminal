@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QMouseEvent
 
-from core.hosts import Host
+from core.data_manager import Host
 
 
 class TagLabel(QLabel):

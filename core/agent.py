@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 import httpx
 
-from core.settings import get_settings_manager
+from core.data_manager import get_data_manager
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +82,9 @@ Você tem acesso à ferramenta execute_command para rodar comandos no terminal S
             deps: Agent dependencies including command executor
         """
         self.deps = deps
-        self._settings_manager = get_settings_manager()
-        self.api_key = self._settings_manager.get_api_key()
-        self.model = self._settings_manager.get_model()
+        self._data_manager = get_data_manager()
+        self.api_key = self._data_manager.get_api_key()
+        self.model = self._data_manager.get_model()
         self.messages: list[dict] = []
         self._cancelled = False
         self._http_client: Optional[httpx.AsyncClient] = None
@@ -230,7 +230,7 @@ Você tem acesso à ferramenta execute_command para rodar comandos no terminal S
     def _get_max_iterations(self) -> int:
         """Return user-configured iteration limit."""
         try:
-            return self._settings_manager.get_max_iterations()
+            return self._data_manager.get_max_iterations()
         except Exception:
             return self.DEFAULT_MAX_ITERATIONS
 
