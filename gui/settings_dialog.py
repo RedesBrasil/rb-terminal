@@ -133,6 +133,13 @@ class SettingsDialog(QDialog):
         self._chat_position_combo.setToolTip("Posicao do painel de chat em relacao ao terminal")
         api_layout.addRow("Posicao do Chat:", self._chat_position_combo)
 
+        # Max conversations per host
+        self._max_conversations_spin = QSpinBox()
+        self._max_conversations_spin.setRange(1, 100)
+        self._max_conversations_spin.setValue(10)
+        self._max_conversations_spin.setToolTip("Quantidade maxima de conversas salvas por host (conversas antigas sao removidas automaticamente)")
+        api_layout.addRow("Historico de conversas:", self._max_conversations_spin)
+
         # Link to OpenRouter
         link_label = QLabel('<a href="https://openrouter.ai/keys">Obter API Key no OpenRouter</a>')
         link_label.setOpenExternalLinks(True)
@@ -398,6 +405,9 @@ class SettingsDialog(QDialog):
         else:
             self._chat_position_combo.setCurrentIndex(0)
 
+        # Max conversations per host
+        self._max_conversations_spin.setValue(dm.get_max_conversations_per_host())
+
         # Data path
         data_path = dm.get_data_path()
         self._data_path_label.setText(str(data_path))
@@ -464,6 +474,7 @@ class SettingsDialog(QDialog):
         chat_position = self._chat_position_combo.currentData()
         if chat_position:
             dm.set_chat_position(chat_position)
+        dm.set_max_conversations_per_host(self._max_conversations_spin.value())
 
         QMessageBox.information(
             self,

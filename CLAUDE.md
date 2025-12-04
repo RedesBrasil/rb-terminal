@@ -73,9 +73,23 @@ Salvos em `~/.rb-terminal/` (ou `%APPDATA%\.rb-terminal` no Windows):
     "chat_position": "bottom",
     "available_tags": ["prod", "dev"],
     "hosts_view_mode": "cards",
-    "hosts_sort_by": "name"
+    "hosts_sort_by": "name",
+    "max_conversations_per_host": 10
   },
-  "hosts": [...]
+  "hosts": [...],
+  "conversations": [
+    {
+      "id": "uuid",
+      "host_id": "host-uuid",
+      "title": "Título gerado da primeira mensagem",
+      "created_at": "2024-12-04T10:00:00",
+      "updated_at": "2024-12-04T10:30:00",
+      "messages": [
+        {"role": "user", "content": "...", "timestamp": "..."},
+        {"role": "assistant", "content": "...", "timestamp": "..."}
+      ]
+    }
+  ]
 }
 ```
 
@@ -89,6 +103,7 @@ Singleton `get_data_manager()` que unifica hosts e settings. Gerencia:
 - Caminho customizável via pointer.json (sincronização Dropbox/OneDrive)
 - Export/import com senha de proteção opcional
 - Migração automática de arquivos legados
+- Histórico de conversas de chat por host (com rotação automática)
 
 ### core/crypto.py
 

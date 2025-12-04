@@ -4,19 +4,53 @@ Provides a chat interface for communicating with the AI agent.
 """
 
 import logging
-from typing import Optional
+from typing import Optional, List, Tuple
+from datetime import datetime
 import html
 import re
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit,
     QPushButton, QLabel, QScrollArea,
-    QFrame, QSizePolicy, QStyle, QToolButton
+    QFrame, QSizePolicy, QStyle, QToolButton,
+    QComboBox
 )
-from PySide6.QtCore import Qt, Signal, Slot, QTimer, QEvent, QSize
-from PySide6.QtGui import QFont, QColor, QPalette, QTextCursor, QKeyEvent
+from PySide6.QtCore import Qt, Signal, Slot, QTimer, QSize
+from PySide6.QtGui import QKeyEvent
 
 logger = logging.getLogger(__name__)
+
+
+class ConversationComboBox(QComboBox):
+    """Combobox para selecionar conversas anteriores."""
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.setEditable(False)  # Dropdown simples
+        self._all_items: List[Tuple[str, str]] = []  # [(display_text, data), ...]
+
+    def set_items(self, items: List[Tuple[str, str]]) -> None:
+        """Set all items for the combobox.
+
+        Args:
+            items: List of (display_text, data) tuples
+        """
+        self._all_items = items
+        self.blockSignals(True)
+        current_data = self.currentData()
+
+        self.clear()
+        self.addItem("Nova conversa", "")
+        for display, data in items:
+            self.addItem(display, data)
+
+        # Restore selection if possible
+        if current_data:
+            index = self.findData(current_data)
+            if index >= 0:
+                self.setCurrentIndex(index)
+
+        self.blockSignals(False)
 
 
 class ChatInputField(QTextEdit):
@@ -56,6 +90,10 @@ class MessageBubble(QFrame):
 
     def __init__(self, text: str, is_user: bool, parent: Optional[QWidget] = None):
         super().__init__(parent)
+
+        # Store original data for retrieval
+        self._text = text
+        self._is_user = is_user
 
         self.setFrameShape(QFrame.Shape.StyledPanel)
         self.setFrameShadow(QFrame.Shadow.Raised)
@@ -109,6 +147,16 @@ class MessageBubble(QFrame):
 
         layout.addWidget(label)
 
+    @property
+    def text(self) -> str:
+        """Get the original message text."""
+        return self._text
+
+    @property
+    def is_user(self) -> bool:
+        """Check if this is a user message."""
+        return self._is_user
+
 
 class ChatWidget(QWidget):
     """
@@ -119,19 +167,25 @@ class ChatWidget(QWidget):
     - Input field for user messages
     - Send button
     - Status indicator
+    - Conversation selector
 
     Emits:
     - message_sent(str): When user sends a message
     - stop_requested(): When user clicks stop button
+    - conversation_changed(str): When user selects a different conversation
+    - new_conversation_requested(): When user wants to start a new conversation
     """
 
     message_sent = Signal(str)
     stop_requested = Signal()
+    conversation_changed = Signal(str)  # Emits conv_id or "" for new
+    new_conversation_requested = Signal()
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
 
         self._is_processing = False
+        self._display_messages: List[Tuple[str, bool]] = []  # Track messages for saving
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -140,7 +194,10 @@ class ChatWidget(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(8)
 
-        # Header
+        # Header with conversation selector
+        header_layout = QHBoxLayout()
+        header_layout.setSpacing(8)
+
         header = QLabel("Chat IA")
         header.setStyleSheet("""
             QLabel {
@@ -150,7 +207,77 @@ class ChatWidget(QWidget):
                 padding: 4px;
             }
         """)
-        layout.addWidget(header)
+        header_layout.addWidget(header)
+
+        # Conversation selector combobox
+        self._conversation_combo = ConversationComboBox()
+        self._conversation_combo.setToolTip("Clique para ver conversas anteriores")
+        self._conversation_combo.setMinimumWidth(200)
+        self._conversation_combo.setStyleSheet("""
+            QComboBox {
+                background-color: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                padding: 4px 8px;
+                color: #dcdcdc;
+                min-height: 24px;
+            }
+            QComboBox:hover {
+                border: 1px solid #007acc;
+            }
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 20px;
+                border-left: 1px solid #555555;
+            }
+            QComboBox::down-arrow {
+                width: 10px;
+                height: 10px;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #2d2d2d;
+                border: 1px solid #555555;
+                selection-background-color: #094771;
+                color: #dcdcdc;
+                outline: none;
+            }
+            QComboBox QAbstractItemView::item {
+                padding: 6px;
+                min-height: 24px;
+            }
+            QComboBox QAbstractItemView::item:hover {
+                background-color: #3c3c3c;
+            }
+        """)
+        self._conversation_combo.addItem("Nova conversa", "")
+        self._conversation_combo.currentIndexChanged.connect(self._on_conversation_selected)
+        header_layout.addWidget(self._conversation_combo, 1)
+
+        # New conversation button
+        self._new_conv_btn = QPushButton("+")
+        self._new_conv_btn.setToolTip("Iniciar nova conversa")
+        self._new_conv_btn.setFixedSize(26, 26)
+        self._new_conv_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #0e639c;
+                border: none;
+                border-radius: 4px;
+                color: white;
+                font-weight: bold;
+                font-size: 16px;
+            }
+            QPushButton:hover {
+                background-color: #1177bb;
+            }
+            QPushButton:pressed {
+                background-color: #0d5a8c;
+            }
+        """)
+        self._new_conv_btn.clicked.connect(self._on_new_conversation)
+        header_layout.addWidget(self._new_conv_btn)
+
+        layout.addLayout(header_layout)
 
         # Status indicator
         self._status_label = QLabel("Pronto")
@@ -303,13 +430,14 @@ class ChatWidget(QWidget):
         self._action_btn.move(x, y)
         self._action_btn.raise_()
 
-    def add_message(self, text: str, is_user: bool) -> None:
+    def add_message(self, text: str, is_user: bool, track: bool = True) -> None:
         """
         Add a message to the chat history.
 
         Args:
             text: Message text
             is_user: True if message is from user, False if from AI
+            track: If True, add to display_messages for persistence
         """
         # Normalize line endings and trim leading/trailing blanks
         normalized = text.replace("\r\n", "\n")
@@ -317,6 +445,10 @@ class ChatWidget(QWidget):
             normalized = normalized.strip()
         else:
             normalized = normalized.lstrip()
+
+        # Track message for persistence
+        if track:
+            self._display_messages.append((normalized, is_user))
 
         # Remove the stretch at the end
         stretch_item = self._messages_layout.takeAt(self._messages_layout.count() - 1)
@@ -370,6 +502,9 @@ class ChatWidget(QWidget):
 
     def clear_messages(self) -> None:
         """Clear all messages from chat."""
+        # Clear tracked messages
+        self._display_messages.clear()
+
         # Remove all widgets except the stretch
         while self._messages_layout.count() > 1:
             item = self._messages_layout.takeAt(0)
@@ -391,3 +526,73 @@ class ChatWidget(QWidget):
             self.set_status("Conecte-se a um host primeiro")
         elif not self._is_processing:
             self.set_status("Pronto")
+
+    # === Conversation management ===
+
+    def _on_conversation_selected(self, index: int) -> None:
+        """Handle conversation selection from combobox."""
+        conv_id = self._conversation_combo.currentData()
+        self.conversation_changed.emit(conv_id or "")
+
+    def _on_new_conversation(self) -> None:
+        """Handle new conversation button click."""
+        self.new_conversation_requested.emit()
+
+    def set_conversations(self, conversations: List[Tuple[str, str, str]]) -> None:
+        """
+        Populate the conversation selector.
+
+        Args:
+            conversations: List of (conv_id, title, updated_at) tuples
+        """
+        items = []
+        for conv_id, title, updated_at in conversations:
+            # Format: "Title - DD/MM HH:MM"
+            try:
+                dt = datetime.fromisoformat(updated_at)
+                timestamp = dt.strftime("%d/%m %H:%M")
+            except Exception:
+                timestamp = ""
+
+            display = title[:30] + ("..." if len(title) > 30 else "")
+            if timestamp:
+                display += f" - {timestamp}"
+
+            items.append((display, conv_id))
+
+        self._conversation_combo.set_items(items)
+
+    def set_current_conversation(self, conv_id: Optional[str]) -> None:
+        """Select a conversation in the combobox."""
+        self._conversation_combo.blockSignals(True)
+
+        if not conv_id:
+            self._conversation_combo.setCurrentIndex(0)
+        else:
+            index = self._conversation_combo.findData(conv_id)
+            if index >= 0:
+                self._conversation_combo.setCurrentIndex(index)
+
+        self._conversation_combo.blockSignals(False)
+
+    def restore_messages(self, messages: List[Tuple[str, bool]]) -> None:
+        """
+        Restore chat messages from saved state.
+
+        Args:
+            messages: List of (text, is_user) tuples
+        """
+        self.clear_messages()
+        for text, is_user in messages:
+            self.add_message(text, is_user, track=False)
+        # Update tracked messages
+        self._display_messages = list(messages)
+
+    def get_display_messages(self) -> List[Tuple[str, bool]]:
+        """
+        Get current display messages for saving.
+
+        Returns:
+            List of (text, is_user) tuples
+        """
+        return self._display_messages.copy()

@@ -19,7 +19,7 @@ from PySide6.QtGui import QCloseEvent, QAction, QColor, QPainter, QPixmap, QIcon
 
 from core.ssh_session import SSHSession, SSHConfig
 from core.agent import create_agent, SSHAgent
-from core.data_manager import get_data_manager, DataManager
+from core.data_manager import get_data_manager, DataManager, ChatMessage
 from gui.terminal_widget import TerminalWidget
 from gui.chat_widget import ChatWidget
 from gui.hosts_dialog import HostDialog, PasswordPromptDialog, QuickConnectDialog
@@ -539,6 +539,8 @@ class MainWindow(QMainWindow):
         # Chat signals
         self._chat.message_sent.connect(self._on_chat_message)
         self._chat.stop_requested.connect(self._on_stop_agent)
+        self._chat.conversation_changed.connect(self._on_conversation_changed)
+        self._chat.new_conversation_requested.connect(self._on_new_conversation)
 
         # Setup resize timer for terminal resize
         self._resize_timer = QTimer()
@@ -739,10 +741,12 @@ class MainWindow(QMainWindow):
         """Handle tab change - update UI state and chat context."""
         self._update_ui_state()
 
-        # Set focus to the terminal in the new tab
+        # Restore chat state for the new tab
         session = self._get_active_session()
-        if session and session.terminal:
-            session.terminal.set_focus()
+        if session:
+            self._restore_chat_for_session(session)
+            if session.terminal:
+                session.terminal.set_focus()
 
     @Slot()
     def _on_next_tab(self) -> None:
@@ -1090,7 +1094,7 @@ class MainWindow(QMainWindow):
 
             self._create_agent_for_session(session)
             self._update_tab_status(session)
-            self._chat.clear_messages()
+            self._restore_chat_for_session(session)
             self._update_ui_state()
 
         except asyncssh.PermissionDenied:
@@ -1242,6 +1246,13 @@ class MainWindow(QMainWindow):
             if session.agent:
                 response = await session.agent.chat(message)
                 self._chat.add_message(response, is_user=False)
+
+                # Update session chat state with current display messages
+                session.chat_state.display_messages = self._chat.get_display_messages()
+
+                # Save to persistent storage (only for saved hosts)
+                self._save_chat_to_conversation(session)
+
         except asyncio.CancelledError:
             self._chat.add_message("Operacao cancelada.", is_user=False)
         except Exception as e:
@@ -1258,6 +1269,147 @@ class MainWindow(QMainWindow):
             session.agent.cancel()
         if self._agent_task and not self._agent_task.done():
             self._agent_task.cancel()
+
+    # === Chat conversation management ===
+
+    def _restore_chat_for_session(self, session: TabSession) -> None:
+        """Restore chat widget state for a session."""
+        # Clear current chat messages
+        self._chat.clear_messages()
+
+        # Load conversations for this host (if saved host)
+        if session.host_id:
+            convs = self._data_manager.get_conversations_for_host(session.host_id)
+            conv_list = [(c.id, c.title, c.updated_at) for c in convs]
+            self._chat.set_conversations(conv_list)
+            self._chat.set_current_conversation(session.chat_state.conversation_id)
+        else:
+            # Quick connect - no saved conversations
+            self._chat.set_conversations([])
+            self._chat.set_current_conversation(None)
+
+        # Restore display messages from session state
+        if session.chat_state.display_messages:
+            self._chat.restore_messages(session.chat_state.display_messages)
+
+        # Sync agent messages if continuing a conversation
+        if session.agent and session.chat_state.conversation_id:
+            conv = self._data_manager.get_conversation_by_id(session.chat_state.conversation_id)
+            if conv and conv.messages:
+                # Restore agent.messages from conversation
+                session.agent.messages = [
+                    {
+                        "role": m.role,
+                        "content": m.content,
+                        **({"tool_calls": m.tool_calls} if m.tool_calls else {}),
+                        **({"tool_call_id": m.tool_call_id} if m.tool_call_id else {})
+                    }
+                    for m in conv.messages
+                ]
+
+    def _save_chat_to_conversation(self, session: TabSession) -> None:
+        """Save current chat to persistent conversation."""
+        # Only save for saved hosts (not quick connect)
+        if not session.host_id or not session.agent:
+            return
+
+        # Convert agent messages to ChatMessage objects
+        chat_messages = []
+        for msg in session.agent.messages:
+            chat_messages.append(ChatMessage(
+                role=msg.get("role", "user"),
+                content=msg.get("content", ""),
+                tool_calls=msg.get("tool_calls"),
+                tool_call_id=msg.get("tool_call_id")
+            ))
+
+        if not chat_messages:
+            return
+
+        if session.chat_state.conversation_id:
+            # Update existing conversation
+            self._data_manager.update_conversation(
+                session.chat_state.conversation_id,
+                chat_messages
+            )
+        else:
+            # Create new conversation
+            conv = self._data_manager.create_conversation(session.host_id)
+            session.chat_state.conversation_id = conv.id
+            self._data_manager.update_conversation(conv.id, chat_messages)
+
+        # Refresh conversation list in UI
+        convs = self._data_manager.get_conversations_for_host(session.host_id)
+        conv_list = [(c.id, c.title, c.updated_at) for c in convs]
+        self._chat.set_conversations(conv_list)
+        self._chat.set_current_conversation(session.chat_state.conversation_id)
+
+    @Slot(str)
+    def _on_conversation_changed(self, conv_id: str) -> None:
+        """Handle conversation selection from dropdown."""
+        session = self._get_active_session()
+        if not session:
+            return
+
+        # Save current state first
+        if session.chat_state.conversation_id and session.agent:
+            self._save_chat_to_conversation(session)
+
+        # Clear chat
+        self._chat.clear_messages()
+
+        if conv_id:
+            # Load existing conversation
+            conv = self._data_manager.get_conversation_by_id(conv_id)
+            if conv:
+                session.chat_state.conversation_id = conv_id
+
+                # Restore display messages (only user and assistant with content)
+                display_msgs = []
+                for msg in conv.messages:
+                    if msg.role == "user":
+                        display_msgs.append((msg.content, True))
+                    elif msg.role == "assistant" and msg.content:
+                        display_msgs.append((msg.content, False))
+
+                session.chat_state.display_messages = display_msgs
+                self._chat.restore_messages(display_msgs)
+
+                # Restore agent messages
+                if session.agent:
+                    session.agent.messages = [
+                        {
+                            "role": m.role,
+                            "content": m.content,
+                            **({"tool_calls": m.tool_calls} if m.tool_calls else {}),
+                            **({"tool_call_id": m.tool_call_id} if m.tool_call_id else {})
+                        }
+                        for m in conv.messages
+                    ]
+        else:
+            # New conversation
+            session.chat_state.clear()
+            if session.agent:
+                session.agent.reset()
+
+    @Slot()
+    def _on_new_conversation(self) -> None:
+        """Handle new conversation request."""
+        session = self._get_active_session()
+        if not session:
+            return
+
+        # Save current conversation first (if exists)
+        if session.chat_state.conversation_id and session.agent:
+            self._save_chat_to_conversation(session)
+
+        # Clear state
+        session.chat_state.clear()
+        self._chat.clear_messages()
+        self._chat.set_current_conversation(None)
+
+        if session.agent:
+            session.agent.reset()
 
     def resizeEvent(self, event) -> None:
         """Handle window resize."""

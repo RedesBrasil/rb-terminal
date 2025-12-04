@@ -3,12 +3,24 @@ Tab session management for multi-tab terminal support.
 """
 
 from dataclasses import dataclass, field
-from typing import Optional, TYPE_CHECKING
+from typing import Optional, List, Tuple, TYPE_CHECKING
 import uuid
 
 if TYPE_CHECKING:
     from gui.terminal_widget import TerminalWidget
     from core.ssh_session import SSHSession, SSHConfig
+
+
+@dataclass
+class ChatState:
+    """In-memory chat state for a tab."""
+    conversation_id: Optional[str] = None  # Current conversation ID (None = new)
+    display_messages: List[Tuple[str, bool]] = field(default_factory=list)  # [(text, is_user), ...]
+
+    def clear(self) -> None:
+        """Clear the chat state for a new conversation."""
+        self.conversation_id = None
+        self.display_messages.clear()
 
 
 @dataclass
@@ -26,6 +38,7 @@ class TabSession:
     device_type: Optional[str] = None
     output_buffer: list = field(default_factory=list)
     connection_status: str = "disconnected"  # disconnected, connecting, connected
+    chat_state: ChatState = field(default_factory=ChatState)
 
     @property
     def is_connected(self) -> bool:

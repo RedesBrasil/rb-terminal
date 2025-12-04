@@ -53,6 +53,7 @@ class Settings:
     available_tags: list = field(default_factory=list)
     hosts_view_mode: str = "cards"
     hosts_sort_by: str = "name"
+    max_conversations_per_host: int = 10
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -68,6 +69,7 @@ class Settings:
             available_tags=data.get("available_tags", []),
             hosts_view_mode=data.get("hosts_view_mode", "cards") or "cards",
             hosts_sort_by=data.get("hosts_sort_by", "name") or "name",
+            max_conversations_per_host=int(data.get("max_conversations_per_host", 10) or 10),
         )
 
 
@@ -116,6 +118,70 @@ class Host:
 
 
 @dataclass
+class ChatMessage:
+    """A single chat message in a conversation."""
+    role: str  # "user", "assistant", "system", "tool"
+    content: str
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    tool_calls: Optional[list] = None  # For assistant messages with tool calls
+    tool_call_id: Optional[str] = None  # For tool response messages
+
+    def to_dict(self) -> dict:
+        result = {
+            "role": self.role,
+            "content": self.content,
+            "timestamp": self.timestamp
+        }
+        if self.tool_calls:
+            result["tool_calls"] = self.tool_calls
+        if self.tool_call_id:
+            result["tool_call_id"] = self.tool_call_id
+        return result
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ChatMessage":
+        return cls(
+            role=data.get("role", "user"),
+            content=data.get("content", ""),
+            timestamp=data.get("timestamp", datetime.now().isoformat()),
+            tool_calls=data.get("tool_calls"),
+            tool_call_id=data.get("tool_call_id")
+        )
+
+
+@dataclass
+class Conversation:
+    """A conversation session with a host."""
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    host_id: str = ""
+    title: str = ""  # Auto-generated from first user message
+    messages: List[ChatMessage] = field(default_factory=list)
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "host_id": self.host_id,
+            "title": self.title,
+            "messages": [m.to_dict() for m in self.messages],
+            "created_at": self.created_at,
+            "updated_at": self.updated_at
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "Conversation":
+        return cls(
+            id=data.get("id", str(uuid.uuid4())),
+            host_id=data.get("host_id", ""),
+            title=data.get("title", ""),
+            messages=[ChatMessage.from_dict(m) for m in data.get("messages", [])],
+            created_at=data.get("created_at", datetime.now().isoformat()),
+            updated_at=data.get("updated_at", datetime.now().isoformat())
+        )
+
+
+@dataclass
 class ImportResult:
     """Result of an import operation."""
     success: bool
@@ -151,6 +217,7 @@ class DataManager:
         self._security: SecurityConfig = SecurityConfig()
         self._settings: Settings = Settings()
         self._hosts: List[Host] = []
+        self._conversations: List[Conversation] = []
         self._loaded: bool = False
 
         # Determine data path
@@ -401,8 +468,9 @@ class DataManager:
             self._security = SecurityConfig.from_dict(data.get("security", {}))
             self._settings = Settings.from_dict(data.get("settings", {}))
             self._hosts = [Host.from_dict(h) for h in data.get("hosts", [])]
+            self._conversations = [Conversation.from_dict(c) for c in data.get("conversations", [])]
             self._loaded = True
-            logger.info(f"Loaded {len(self._hosts)} hosts")
+            logger.info(f"Loaded {len(self._hosts)} hosts, {len(self._conversations)} conversations")
 
         except Exception as e:
             logger.error(f"Failed to load data: {e}")
@@ -414,7 +482,8 @@ class DataManager:
             "version": DATA_VERSION,
             "security": self._security.to_dict(),
             "settings": self._settings.to_dict(),
-            "hosts": [h.to_dict() for h in self._hosts]
+            "hosts": [h.to_dict() for h in self._hosts],
+            "conversations": [c.to_dict() for c in self._conversations]
         }
 
     def _write_to_path(self, path: Path) -> None:
@@ -628,6 +697,88 @@ class DataManager:
         if sort_by in {"name", "host", "device_type"}:
             self._settings.hosts_sort_by = sort_by
             self._save()
+
+    # === Conversation settings ===
+
+    def get_max_conversations_per_host(self) -> int:
+        """Get maximum conversations to keep per host."""
+        return max(1, self._settings.max_conversations_per_host)
+
+    def set_max_conversations_per_host(self, limit: int) -> None:
+        """Set maximum conversations per host."""
+        self._settings.max_conversations_per_host = max(1, min(100, limit))
+        self._save()
+
+    # === Conversation accessors ===
+
+    def get_conversations_for_host(self, host_id: str) -> List[Conversation]:
+        """Get all conversations for a host, sorted by updated_at descending."""
+        convs = [c for c in self._conversations if c.host_id == host_id]
+        convs.sort(key=lambda c: c.updated_at, reverse=True)
+        return convs
+
+    def get_conversation_by_id(self, conv_id: str) -> Optional[Conversation]:
+        """Get a conversation by ID."""
+        for conv in self._conversations:
+            if conv.id == conv_id:
+                return conv
+        return None
+
+    def create_conversation(self, host_id: str, title: str = "") -> Conversation:
+        """Create a new conversation for a host."""
+        conv = Conversation(host_id=host_id, title=title or "Nova conversa")
+        self._conversations.append(conv)
+        self._enforce_conversation_limit(host_id)
+        self._save()
+        return conv
+
+    def update_conversation(
+        self,
+        conv_id: str,
+        messages: List[ChatMessage],
+        title: Optional[str] = None
+    ) -> Optional[Conversation]:
+        """Update conversation messages and timestamp."""
+        conv = self.get_conversation_by_id(conv_id)
+        if not conv:
+            return None
+
+        conv.messages = messages
+        conv.updated_at = datetime.now().isoformat()
+
+        # Auto-generate title from first user message if not set
+        if title:
+            conv.title = title
+        elif not conv.title or conv.title == "Nova conversa":
+            for msg in messages:
+                if msg.role == "user" and msg.content:
+                    # Use first 50 chars of first user message
+                    content = msg.content.strip()
+                    conv.title = content[:50] + ("..." if len(content) > 50 else "")
+                    break
+
+        self._save()
+        return conv
+
+    def delete_conversation(self, conv_id: str) -> bool:
+        """Delete a conversation."""
+        for i, conv in enumerate(self._conversations):
+            if conv.id == conv_id:
+                self._conversations.pop(i)
+                self._save()
+                return True
+        return False
+
+    def _enforce_conversation_limit(self, host_id: str) -> None:
+        """Remove oldest conversations if limit exceeded."""
+        convs = self.get_conversations_for_host(host_id)
+        limit = self.get_max_conversations_per_host()
+
+        if len(convs) > limit:
+            # convs is sorted by updated_at desc, so remove from the end
+            to_remove = convs[limit:]
+            for conv in to_remove:
+                self._conversations.remove(conv)
 
     # === Hosts accessors ===
 
