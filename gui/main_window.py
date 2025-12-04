@@ -6,6 +6,7 @@ Contains collapsible hosts sidebar, terminal widget with tabs, and AI chat panel
 import asyncio
 import logging
 import subprocess
+import webbrowser
 from pathlib import Path
 from typing import Optional, Dict
 
@@ -190,6 +191,7 @@ class MainWindow(QMainWindow):
         self._hosts_view.edit_requested.connect(self._edit_host)
         self._hosts_view.delete_requested.connect(self._delete_host)
         self._hosts_view.winbox_requested.connect(self._launch_winbox)
+        self._hosts_view.web_access_requested.connect(self._open_web_access)
         self._hosts_view.add_requested.connect(self._on_add_host_clicked)
         self._hosts_view.quick_connect_requested.connect(self._on_quick_connect)
         self._stacked_widget.addWidget(self._hosts_view)
@@ -1189,6 +1191,41 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Failed to launch Winbox: {e}")
             QMessageBox.critical(self, "Erro", f"Erro ao iniciar Winbox:\n{e}")
+
+    def _open_web_access(self, host_id: str) -> None:
+        """Open web browser for the specified host."""
+        # Get host data
+        host = self._data_manager.get_host_by_id(host_id)
+        if not host:
+            return
+
+        # Build URL
+        protocol = "https" if host.https_enabled else "http"
+        port = host.http_port
+
+        # Only add port to URL if not default
+        if (protocol == "http" and port == 80) or (protocol == "https" and port == 443):
+            url = f"{protocol}://{host.host}"
+        else:
+            url = f"{protocol}://{host.host}:{port}"
+
+        # Port knocking before opening browser
+        if host.port_knocking:
+            asyncio.create_task(self._perform_port_knock(host.host, host.port_knocking))
+            # Small delay for port knocking to complete
+            QTimer.singleShot(500, lambda: self._execute_web_access(url))
+        else:
+            self._execute_web_access(url)
+
+    def _execute_web_access(self, url: str) -> None:
+        """Open URL in default browser."""
+        try:
+            webbrowser.open(url)
+            self._status_bar.showMessage(f"Abrindo navegador: {url}", 3000)
+            logger.info(f"Opened browser for {url}")
+        except Exception as e:
+            logger.error(f"Failed to open browser: {e}")
+            QMessageBox.critical(self, "Erro", f"Erro ao abrir navegador:\n{e}")
 
     async def _connect_session_async(self, session: TabSession, config: SSHConfig) -> None:
         """Async connection handler for a session."""

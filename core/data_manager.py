@@ -104,6 +104,8 @@ class Host:
     notes: Optional[str] = None
     port_knocking: list = field(default_factory=list)  # [{"protocol": "tcp", "port": 1234}, ...]
     winbox_port: int = 0  # 0 = usar padrão 8291
+    http_port: int = 80  # Porta HTTP para acesso web
+    https_enabled: bool = False  # Usar HTTPS ao invés de HTTP
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -138,6 +140,8 @@ class Host:
             notes=data.get("notes"),
             port_knocking=data.get("port_knocking", []),
             winbox_port=data.get("winbox_port", 0),
+            http_port=data.get("http_port", 80),
+            https_enabled=data.get("https_enabled", False),
         )
 
 
@@ -872,7 +876,9 @@ class DataManager:
         groups: Optional[list] = None,
         notes: Optional[str] = None,
         port_knocking: Optional[list] = None,
-        winbox_port: int = 0
+        winbox_port: int = 0,
+        http_port: int = 80,
+        https_enabled: bool = False
     ) -> Host:
         """Add a new host."""
         password_encrypted = None
@@ -895,7 +901,9 @@ class DataManager:
             groups=groups if groups else [],
             notes=notes if notes else None,
             port_knocking=port_knocking if port_knocking else [],
-            winbox_port=winbox_port
+            winbox_port=winbox_port,
+            http_port=http_port,
+            https_enabled=https_enabled
         )
 
         self._hosts.append(new_host)
@@ -922,7 +930,9 @@ class DataManager:
         groups: Optional[list] = None,
         notes: Optional[str] = None,
         port_knocking: Optional[list] = None,
-        winbox_port: Optional[int] = None
+        winbox_port: Optional[int] = None,
+        http_port: Optional[int] = None,
+        https_enabled: Optional[bool] = None
     ) -> Optional[Host]:
         """Update an existing host."""
         existing = self.get_host_by_id(host_id)
@@ -959,6 +969,10 @@ class DataManager:
             existing.port_knocking = port_knocking
         if winbox_port is not None:
             existing.winbox_port = winbox_port
+        if http_port is not None:
+            existing.http_port = http_port
+        if https_enabled is not None:
+            existing.https_enabled = https_enabled
 
         if clear_password:
             existing.password_encrypted = None

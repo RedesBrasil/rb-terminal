@@ -251,6 +251,21 @@ class HostDialog(QDialog):
         self._winbox_port.setToolTip("Porta do Winbox (MikroTik). 0 = usar padrao 8291")
         self._advanced_layout.addRow("Porta Winbox:", self._winbox_port)
 
+        # HTTP port and HTTPS checkbox
+        http_layout = QHBoxLayout()
+        self._http_port = QSpinBox()
+        self._http_port.setRange(1, 65535)
+        self._http_port.setValue(80)
+        self._http_port.setToolTip("Porta HTTP para acesso web")
+        http_layout.addWidget(self._http_port)
+
+        self._https_enabled = QCheckBox("HTTPS")
+        self._https_enabled.setToolTip("Usar HTTPS ao inves de HTTP")
+        http_layout.addWidget(self._https_enabled)
+        http_layout.addStretch()
+
+        self._advanced_layout.addRow("Porta HTTP:", http_layout)
+
         form.addRow("", self._advanced_section)
 
         # === Port Knocking section (collapsible) ===
@@ -425,6 +440,10 @@ class HostDialog(QDialog):
         if self._host.winbox_port:
             self._winbox_port.setValue(self._host.winbox_port)
 
+        # HTTP settings
+        self._http_port.setValue(self._host.http_port)
+        self._https_enabled.setChecked(self._host.https_enabled)
+
     def _toggle_password_visibility(self, checked: bool) -> None:
         """Toggle password visibility."""
         if checked:
@@ -553,6 +572,8 @@ class HostDialog(QDialog):
         notes = self._notes.toPlainText().strip()
         port_knocking = self._get_knock_sequence()
         winbox_port = self._winbox_port.value()
+        http_port = self._http_port.value()
+        https_enabled = self._https_enabled.isChecked()
 
         # Validation
         if not name:
@@ -599,7 +620,9 @@ class HostDialog(QDialog):
                     groups=groups,
                     notes=notes if notes else None,
                     port_knocking=port_knocking,
-                    winbox_port=winbox_port
+                    winbox_port=winbox_port,
+                    http_port=http_port,
+                    https_enabled=https_enabled
                 )
             else:
                 # Add new host
@@ -619,7 +642,9 @@ class HostDialog(QDialog):
                     groups=groups,
                     notes=notes if notes else None,
                     port_knocking=port_knocking,
-                    winbox_port=winbox_port
+                    winbox_port=winbox_port,
+                    http_port=http_port,
+                    https_enabled=https_enabled
                 )
 
             self.accept()

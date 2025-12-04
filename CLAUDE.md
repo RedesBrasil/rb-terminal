@@ -74,7 +74,8 @@ Salvos em `~/.rb-terminal/` (ou `%APPDATA%\.rb-terminal` no Windows):
     "available_tags": ["prod", "dev"],
     "hosts_view_mode": "cards",
     "hosts_sort_by": "name",
-    "max_conversations_per_host": 10
+    "max_conversations_per_host": 10,
+    "winbox_path": "C:/path/to/winbox64.exe"
   },
   "hosts": [
     {
@@ -86,7 +87,10 @@ Salvos em `~/.rb-terminal/` (ou `%APPDATA%\.rb-terminal` no Windows):
       "port_knocking": [
         {"protocol": "tcp", "port": 1234},
         {"protocol": "udp", "port": 5678}
-      ]
+      ],
+      "winbox_port": 8291,
+      "http_port": 80,
+      "https_enabled": false
     }
   ],
   "conversations": [
@@ -143,7 +147,7 @@ Dialog para desbloquear quando há senha mestra mas sem sessão cacheada (novo c
 
 ### gui/settings_dialog.py
 
-Dialog de configurações com seções: API OpenRouter, Armazenamento (caminho customizado, segurança), Backup (export/import).
+Dialog de configurações com seções: API OpenRouter, Armazenamento (caminho customizado, segurança), Backup (export/import), Winbox (caminho do executável).
 
 ## Notas Técnicas
 
@@ -155,3 +159,5 @@ Dialog de configurações com seções: API OpenRouter, Armazenamento (caminho c
 6. **Segurança:** PBKDF2 com 600k iterações (OWASP 2024+), salt de 32 bytes
 7. **Migração:** Arquivos legados (hosts.json, settings.json, .key) são migrados automaticamente
 8. **Port Knocking:** Sequência de portas TCP/UDP acionadas antes da conexão SSH (fire and forget, sem esperar resposta)
+9. **Winbox:** Menu de contexto do host lança `winbox.exe <ip>:<porta> <user> <senha>`. Porta padrão 8291, configurável por host. Port knocking executado antes se configurado.
+10. **Acesso Web:** Menu de contexto abre navegador padrão com `http(s)://<ip>:<porta>`. Porta e HTTPS configuráveis por host em Opções Avançadas.

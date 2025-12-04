@@ -34,6 +34,7 @@ class HostCard(QFrame):
     edit_requested = Signal(str)  # host_id
     delete_requested = Signal(str)  # host_id
     winbox_requested = Signal(str)  # host_id
+    web_access_requested = Signal(str)  # host_id
 
     def __init__(self, host: Host, parent=None):
         super().__init__(parent)
@@ -126,6 +127,9 @@ class HostCard(QFrame):
         winbox_action = menu.addAction("Winbox")
         winbox_action.triggered.connect(lambda: self.winbox_requested.emit(self._host.id))
 
+        web_action = menu.addAction("Acesso Web")
+        web_action.triggered.connect(lambda: self.web_access_requested.emit(self._host.id))
+
         menu.addSeparator()
 
         edit_action = menu.addAction("Editar")
@@ -153,6 +157,7 @@ class HostListItem(QFrame):
     edit_requested = Signal(str)  # host_id
     delete_requested = Signal(str)  # host_id
     winbox_requested = Signal(str)  # host_id
+    web_access_requested = Signal(str)  # host_id
 
     def __init__(self, host: Host, parent=None):
         super().__init__(parent)
@@ -243,6 +248,9 @@ class HostListItem(QFrame):
 
         winbox_action = menu.addAction("Winbox")
         winbox_action.triggered.connect(lambda: self.winbox_requested.emit(self._host.id))
+
+        web_action = menu.addAction("Acesso Web")
+        web_action.triggered.connect(lambda: self.web_access_requested.emit(self._host.id))
 
         menu.addSeparator()
 
