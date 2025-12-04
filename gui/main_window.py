@@ -228,12 +228,15 @@ class MainWindow(QMainWindow):
                 background-color: #3c3c3c;
             }
             QTabBar::close-button {
-                image: url(close.png);
                 subcontrol-position: right;
+                background-color: #c42b1c;
+                border-radius: 3px;
+                width: 16px;
+                height: 16px;
+                margin: 2px;
             }
             QTabBar::close-button:hover {
                 background-color: #e81123;
-                border-radius: 2px;
             }
         """)
 
