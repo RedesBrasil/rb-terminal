@@ -245,17 +245,47 @@ class HostDialog(QDialog):
 
         form.addRow("", self._advanced_section)
 
+        # === Port Knocking section (collapsible) ===
+        self._knock_toggle = QPushButton("▶ Port Knocking")
+        self._knock_toggle.setCheckable(True)
+        self._knock_toggle.setStyleSheet("text-align: left; padding: 5px; background: transparent; border: none; color: #888888;")
+        self._knock_toggle.toggled.connect(self._toggle_knock_section)
+        form.addRow("", self._knock_toggle)
+
+        self._knock_section = QWidget()
+        self._knock_section_layout = QVBoxLayout()
+        self._knock_section_layout.setContentsMargins(0, 5, 0, 5)
+        self._knock_section_layout.setSpacing(5)
+        self._knock_section.setLayout(self._knock_section_layout)
+        self._knock_section.setVisible(False)  # Hidden by default
+
+        # Port Knocking entries
+        self._knock_entries = []  # List of (protocol_combo, port_spin, row_widget)
+
+        # Add button row
+        add_btn_row = QHBoxLayout()
+        self._add_knock_btn = QPushButton("+")
+        self._add_knock_btn.setFixedSize(30, 28)
+        self._add_knock_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                color: #dcdcdc;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #4a4a4a;
+            }
+        """)
+        self._add_knock_btn.clicked.connect(lambda: self._add_knock_entry())
+        add_btn_row.addWidget(self._add_knock_btn)
+        add_btn_row.addStretch()
+        self._knock_section_layout.addLayout(add_btn_row)
+
+        form.addRow("", self._knock_section)
+
         layout.addLayout(form)
-
-        # Info label
-        info_label = QLabel(
-            "Dica: Usuário e senha são opcionais - o terminal pedirá se não fornecidos.\n"
-            "Informações adicionais ajudam a IA a usar comandos apropriados."
-        )
-        info_label.setStyleSheet("color: #888888; font-size: 11px;")
-        info_label.setWordWrap(True)
-        layout.addWidget(info_label)
-
         layout.addSpacing(10)
 
         # Buttons
@@ -375,6 +405,14 @@ class HostDialog(QDialog):
         if self._host.notes:
             self._notes.setPlainText(self._host.notes)
 
+        # Port knocking entries
+        if self._host.port_knocking:
+            for entry in self._host.port_knocking:
+                self._add_knock_entry(
+                    protocol=entry.get("protocol", "tcp"),
+                    port=entry.get("port", 1)
+                )
+
     def _toggle_password_visibility(self, checked: bool) -> None:
         """Toggle password visibility."""
         if checked:
@@ -404,6 +442,86 @@ class HostDialog(QDialog):
         else:
             self._advanced_toggle.setText("▶ Opções Avançadas")
 
+    def _toggle_knock_section(self, checked: bool) -> None:
+        """Toggle port knocking section visibility."""
+        self._knock_section.setVisible(checked)
+        if checked:
+            self._knock_toggle.setText("▼ Port Knocking")
+        else:
+            self._knock_toggle.setText("▶ Port Knocking")
+
+    def _add_knock_entry(self, protocol: str = "tcp", port: int = 0) -> None:
+        """Add a new port knocking entry row."""
+        row_widget = QWidget()
+        row_widget.setFixedHeight(35)
+        row_layout = QHBoxLayout()
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(5)
+        row_widget.setLayout(row_layout)
+
+        # Protocol combo
+        protocol_combo = QComboBox()
+        protocol_combo.addItems(["tcp", "udp"])
+        protocol_combo.setCurrentText(protocol)
+        protocol_combo.setFixedWidth(70)
+        protocol_combo.setFixedHeight(28)
+        row_layout.addWidget(protocol_combo)
+
+        # Port spinbox
+        port_spin = QSpinBox()
+        port_spin.setRange(1, 65535)
+        port_spin.setValue(port if port > 0 else 1)
+        port_spin.setFixedWidth(80)
+        port_spin.setFixedHeight(28)
+        row_layout.addWidget(port_spin)
+
+        # Remove button
+        remove_btn = QPushButton("×")
+        remove_btn.setFixedSize(25, 28)
+        remove_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #5a3a3a;
+                border: 1px solid #6a4a4a;
+                border-radius: 3px;
+                color: #dcdcdc;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: #6a4a4a;
+            }
+        """)
+        remove_btn.clicked.connect(lambda: self._remove_knock_entry(row_widget))
+        row_layout.addWidget(remove_btn)
+
+        row_layout.addStretch()
+
+        # Store reference and add to section layout
+        self._knock_entries.append((protocol_combo, port_spin, row_widget))
+        self._knock_section_layout.addWidget(row_widget)
+
+        # Force layout update
+        self.adjustSize()
+
+    def _remove_knock_entry(self, row_widget: QWidget) -> None:
+        """Remove a port knocking entry row."""
+        for i, (_, _, widget) in enumerate(self._knock_entries):
+            if widget == row_widget:
+                self._knock_entries.pop(i)
+                self._knock_section_layout.removeWidget(row_widget)
+                row_widget.deleteLater()
+                self.adjustSize()
+                break
+
+    def _get_knock_sequence(self) -> list:
+        """Get the port knocking sequence as a list of dicts."""
+        sequence = []
+        for protocol_combo, port_spin, _ in self._knock_entries:
+            sequence.append({
+                "protocol": protocol_combo.currentText(),
+                "port": port_spin.value()
+            })
+        return sequence
+
     def _on_save(self) -> None:
         """Handle save button click."""
         name = self._name_input.text().strip()
@@ -421,6 +539,7 @@ class HostDialog(QDialog):
         functions = self._functions_widget.get_values()
         groups = self._groups_widget.get_values()
         notes = self._notes.toPlainText().strip()
+        port_knocking = self._get_knock_sequence()
 
         # Validation
         if not name:
@@ -465,7 +584,8 @@ class HostDialog(QDialog):
                     os_version=os_version if os_version else None,
                     functions=functions,
                     groups=groups,
-                    notes=notes if notes else None
+                    notes=notes if notes else None,
+                    port_knocking=port_knocking
                 )
             else:
                 # Add new host
@@ -483,7 +603,8 @@ class HostDialog(QDialog):
                     os_version=os_version if os_version else None,
                     functions=functions,
                     groups=groups,
-                    notes=notes if notes else None
+                    notes=notes if notes else None,
+                    port_knocking=port_knocking
                 )
 
             self.accept()

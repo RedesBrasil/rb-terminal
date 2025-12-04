@@ -100,6 +100,7 @@ class Host:
     functions: list = field(default_factory=list)
     groups: list = field(default_factory=list)
     notes: Optional[str] = None
+    port_knocking: list = field(default_factory=list)  # [{"protocol": "tcp", "port": 1234}, ...]
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -132,6 +133,7 @@ class Host:
             functions=data.get("functions", []),
             groups=data.get("groups", []),
             notes=data.get("notes"),
+            port_knocking=data.get("port_knocking", []),
         )
 
 
@@ -864,7 +866,8 @@ class DataManager:
         os_version: Optional[str] = None,
         functions: Optional[list] = None,
         groups: Optional[list] = None,
-        notes: Optional[str] = None
+        notes: Optional[str] = None,
+        port_knocking: Optional[list] = None
     ) -> Host:
         """Add a new host."""
         password_encrypted = None
@@ -885,7 +888,8 @@ class DataManager:
             os_version=os_version if os_version else None,
             functions=functions if functions else [],
             groups=groups if groups else [],
-            notes=notes if notes else None
+            notes=notes if notes else None,
+            port_knocking=port_knocking if port_knocking else []
         )
 
         self._hosts.append(new_host)
@@ -910,7 +914,8 @@ class DataManager:
         os_version: Optional[str] = None,
         functions: Optional[list] = None,
         groups: Optional[list] = None,
-        notes: Optional[str] = None
+        notes: Optional[str] = None,
+        port_knocking: Optional[list] = None
     ) -> Optional[Host]:
         """Update an existing host."""
         existing = self.get_host_by_id(host_id)
@@ -943,6 +948,8 @@ class DataManager:
             existing.groups = groups
         if notes is not None:
             existing.notes = notes if notes else None
+        if port_knocking is not None:
+            existing.port_knocking = port_knocking
 
         if clear_password:
             existing.password_encrypted = None

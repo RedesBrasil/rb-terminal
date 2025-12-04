@@ -76,7 +76,19 @@ Salvos em `~/.rb-terminal/` (ou `%APPDATA%\.rb-terminal` no Windows):
     "hosts_sort_by": "name",
     "max_conversations_per_host": 10
   },
-  "hosts": [...],
+  "hosts": [
+    {
+      "id": "uuid",
+      "name": "Router Principal",
+      "host": "192.168.1.1",
+      "port": 22,
+      "username": "admin",
+      "port_knocking": [
+        {"protocol": "tcp", "port": 1234},
+        {"protocol": "udp", "port": 5678}
+      ]
+    }
+  ],
   "conversations": [
     {
       "id": "uuid",
@@ -142,3 +154,4 @@ Dialog de configurações com seções: API OpenRouter, Armazenamento (caminho c
 5. **Terminal queries:** Respondidas automaticamente nos primeiros 5s de conexão
 6. **Segurança:** PBKDF2 com 600k iterações (OWASP 2024+), salt de 32 bytes
 7. **Migração:** Arquivos legados (hosts.json, settings.json, .key) são migrados automaticamente
+8. **Port Knocking:** Sequência de portas TCP/UDP acionadas antes da conexão SSH (fire and forget, sem esperar resposta)

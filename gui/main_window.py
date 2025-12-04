@@ -915,7 +915,8 @@ class MainWindow(QMainWindow):
         functions: Optional[list] = None,
         groups: Optional[list] = None,
         tags: Optional[list] = None,
-        notes: Optional[str] = None
+        notes: Optional[str] = None,
+        port_knocking: Optional[list] = None
     ) -> None:
         """
         Unified connection method for both saved hosts and quick connect.
@@ -958,6 +959,7 @@ class MainWindow(QMainWindow):
         session.groups = groups
         session.tags = tags
         session.notes = notes
+        session.port_knocking = port_knocking
 
         # Check if we need to ask for credentials in terminal (like PuTTY)
         need_username = not username
@@ -1023,7 +1025,8 @@ class MainWindow(QMainWindow):
             functions=host.functions,
             groups=host.groups,
             tags=host.tags,
-            notes=host.notes
+            notes=host.notes,
+            port_knocking=host.port_knocking
         )
 
     def _edit_host(self, host_id: str) -> None:
@@ -1107,6 +1110,30 @@ class MainWindow(QMainWindow):
             self._unexpected_disconnect.emit(session.id)
         return callback
 
+    async def _perform_port_knock(self, host: str, sequence: list) -> None:
+        """Execute port knocking sequence (fire and forget)."""
+        import socket
+        for entry in sequence:
+            try:
+                protocol = entry.get("protocol", "tcp")
+                port = entry.get("port")
+                if not port:
+                    continue
+                sock_type = socket.SOCK_STREAM if protocol == "tcp" else socket.SOCK_DGRAM
+                sock = socket.socket(socket.AF_INET, sock_type)
+                sock.settimeout(0.1)
+                if protocol == "tcp":
+                    try:
+                        sock.connect((host, port))
+                    except (socket.timeout, ConnectionRefusedError, OSError):
+                        pass
+                else:
+                    sock.sendto(b"", (host, port))
+                sock.close()
+            except Exception:
+                pass  # Fire and forget - ignore all errors
+        logger.debug(f"Port knocking completed for {host}: {sequence}")
+
     async def _connect_session_async(self, session: TabSession, config: SSHConfig) -> None:
         """Async connection handler for a session."""
         if not session.terminal:
@@ -1117,6 +1144,10 @@ class MainWindow(QMainWindow):
         self._update_tab_status(session)
         self._status_bar.showMessage(f"Conectando a {config.host}...")
         self._status_bar.setStyleSheet("background-color: #ca5010; color: white;")
+
+        # Port knocking before SSH connection
+        if session.port_knocking:
+            await self._perform_port_knock(config.host, session.port_knocking)
 
         try:
             session.ssh_session = SSHSession(

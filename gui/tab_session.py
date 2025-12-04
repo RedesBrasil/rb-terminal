@@ -46,6 +46,7 @@ class TabSession:
     groups: Optional[List[str]] = None
     tags: Optional[List[str]] = None
     notes: Optional[str] = None
+    port_knocking: Optional[List[dict]] = None
 
     @property
     def is_connected(self) -> bool:
