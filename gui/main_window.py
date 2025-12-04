@@ -5,6 +5,8 @@ Contains collapsible hosts sidebar, terminal widget with tabs, and AI chat panel
 
 import asyncio
 import logging
+import subprocess
+from pathlib import Path
 from typing import Optional, Dict
 
 import asyncssh
@@ -187,6 +189,7 @@ class MainWindow(QMainWindow):
         self._hosts_view.connect_requested.connect(self._connect_to_host)
         self._hosts_view.edit_requested.connect(self._edit_host)
         self._hosts_view.delete_requested.connect(self._delete_host)
+        self._hosts_view.winbox_requested.connect(self._launch_winbox)
         self._hosts_view.add_requested.connect(self._on_add_host_clicked)
         self._hosts_view.quick_connect_requested.connect(self._on_quick_connect)
         self._stacked_widget.addWidget(self._hosts_view)
@@ -1133,6 +1136,59 @@ class MainWindow(QMainWindow):
             except Exception:
                 pass  # Fire and forget - ignore all errors
         logger.debug(f"Port knocking completed for {host}: {sequence}")
+
+    def _launch_winbox(self, host_id: str) -> None:
+        """Launch Winbox for the specified host."""
+        # Check if Winbox path is configured
+        winbox_path = self._data_manager.settings.winbox_path
+        if not winbox_path:
+            QMessageBox.warning(
+                self, "Winbox",
+                "Caminho do Winbox nao configurado.\n"
+                "Configure em Configuracoes > Winbox."
+            )
+            return
+
+        if not Path(winbox_path).exists():
+            QMessageBox.warning(
+                self, "Winbox",
+                f"Executavel nao encontrado:\n{winbox_path}"
+            )
+            return
+
+        # Get host data
+        host = self._data_manager.get_host_by_id(host_id)
+        if not host:
+            return
+
+        # Winbox port (0 = use default 8291)
+        winbox_port = host.winbox_port if host.winbox_port else 8291
+
+        # Decrypt password
+        password = self._data_manager.get_password(host_id)
+
+        # Port knocking before opening Winbox
+        if host.port_knocking:
+            asyncio.create_task(self._perform_port_knock(host.host, host.port_knocking))
+            # Small delay for port knocking to complete
+            QTimer.singleShot(500, lambda: self._execute_winbox(
+                winbox_path, host.host, winbox_port, host.username, password or ""
+            ))
+        else:
+            self._execute_winbox(winbox_path, host.host, winbox_port, host.username, password or "")
+
+    def _execute_winbox(self, winbox_path: str, host: str, port: int, user: str, password: str) -> None:
+        """Execute Winbox with parameters."""
+        # Format: winbox.exe ip:port user password
+        args = [winbox_path, f"{host}:{port}", user, password]
+
+        try:
+            subprocess.Popen(args, creationflags=subprocess.DETACHED_PROCESS)
+            self._status_bar.showMessage(f"Winbox iniciado para {host}:{port}", 3000)
+            logger.info(f"Winbox launched for {host}:{port}")
+        except Exception as e:
+            logger.error(f"Failed to launch Winbox: {e}")
+            QMessageBox.critical(self, "Erro", f"Erro ao iniciar Winbox:\n{e}")
 
     async def _connect_session_async(self, session: TabSession, config: SSHConfig) -> None:
         """Async connection handler for a session."""

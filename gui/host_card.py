@@ -33,6 +33,7 @@ class HostCard(QFrame):
     connect_requested = Signal(str)  # host_id
     edit_requested = Signal(str)  # host_id
     delete_requested = Signal(str)  # host_id
+    winbox_requested = Signal(str)  # host_id
 
     def __init__(self, host: Host, parent=None):
         super().__init__(parent)
@@ -122,6 +123,9 @@ class HostCard(QFrame):
         connect_action = menu.addAction("Conectar")
         connect_action.triggered.connect(lambda: self.connect_requested.emit(self._host.id))
 
+        winbox_action = menu.addAction("Winbox")
+        winbox_action.triggered.connect(lambda: self.winbox_requested.emit(self._host.id))
+
         menu.addSeparator()
 
         edit_action = menu.addAction("Editar")
@@ -148,6 +152,7 @@ class HostListItem(QFrame):
     connect_requested = Signal(str)  # host_id
     edit_requested = Signal(str)  # host_id
     delete_requested = Signal(str)  # host_id
+    winbox_requested = Signal(str)  # host_id
 
     def __init__(self, host: Host, parent=None):
         super().__init__(parent)
@@ -235,6 +240,9 @@ class HostListItem(QFrame):
 
         connect_action = menu.addAction("Conectar")
         connect_action.triggered.connect(lambda: self.connect_requested.emit(self._host.id))
+
+        winbox_action = menu.addAction("Winbox")
+        winbox_action.triggered.connect(lambda: self.winbox_requested.emit(self._host.id))
 
         menu.addSeparator()
 

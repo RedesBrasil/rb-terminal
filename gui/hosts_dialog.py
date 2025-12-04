@@ -243,6 +243,14 @@ class HostDialog(QDialog):
         self._terminal_type.setCurrentText("xterm")  # Default to "xterm"
         self._advanced_layout.addRow("Tipo Terminal:", self._terminal_type)
 
+        # Winbox port
+        self._winbox_port = QSpinBox()
+        self._winbox_port.setRange(0, 65535)
+        self._winbox_port.setValue(0)
+        self._winbox_port.setSpecialValueText("8291")
+        self._winbox_port.setToolTip("Porta do Winbox (MikroTik). 0 = usar padrao 8291")
+        self._advanced_layout.addRow("Porta Winbox:", self._winbox_port)
+
         form.addRow("", self._advanced_section)
 
         # === Port Knocking section (collapsible) ===
@@ -413,6 +421,10 @@ class HostDialog(QDialog):
                     port=entry.get("port", 1)
                 )
 
+        # Winbox port
+        if self._host.winbox_port:
+            self._winbox_port.setValue(self._host.winbox_port)
+
     def _toggle_password_visibility(self, checked: bool) -> None:
         """Toggle password visibility."""
         if checked:
@@ -540,6 +552,7 @@ class HostDialog(QDialog):
         groups = self._groups_widget.get_values()
         notes = self._notes.toPlainText().strip()
         port_knocking = self._get_knock_sequence()
+        winbox_port = self._winbox_port.value()
 
         # Validation
         if not name:
@@ -585,7 +598,8 @@ class HostDialog(QDialog):
                     functions=functions,
                     groups=groups,
                     notes=notes if notes else None,
-                    port_knocking=port_knocking
+                    port_knocking=port_knocking,
+                    winbox_port=winbox_port
                 )
             else:
                 # Add new host
@@ -604,7 +618,8 @@ class HostDialog(QDialog):
                     functions=functions,
                     groups=groups,
                     notes=notes if notes else None,
-                    port_knocking=port_knocking
+                    port_knocking=port_knocking,
+                    winbox_port=winbox_port
                 )
 
             self.accept()

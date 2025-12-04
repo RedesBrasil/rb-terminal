@@ -30,6 +30,7 @@ class HostsView(QWidget):
     connect_requested = Signal(str)  # host_id
     edit_requested = Signal(str)  # host_id
     delete_requested = Signal(str)  # host_id
+    winbox_requested = Signal(str)  # host_id
     add_requested = Signal()
     quick_connect_requested = Signal()
 
@@ -570,6 +571,7 @@ class HostsView(QWidget):
             card.connect_requested.connect(self.connect_requested.emit)
             card.edit_requested.connect(self.edit_requested.emit)
             card.delete_requested.connect(self.delete_requested.emit)
+            card.winbox_requested.connect(self.winbox_requested.emit)
             self._hosts_layout.addWidget(card, row, col)
             self._host_widgets.append(card)
 
@@ -599,6 +601,7 @@ class HostsView(QWidget):
             item.connect_requested.connect(self.connect_requested.emit)
             item.edit_requested.connect(self.edit_requested.emit)
             item.delete_requested.connect(self.delete_requested.emit)
+            item.winbox_requested.connect(self.winbox_requested.emit)
             self._hosts_layout.addWidget(item, row, 0, 1, -1)
             self._host_widgets.append(item)
             row += 1

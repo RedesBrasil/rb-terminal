@@ -195,6 +195,26 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(backup_group)
 
+        # Winbox Group
+        winbox_group = QGroupBox("Winbox (MikroTik)")
+        winbox_layout = QFormLayout(winbox_group)
+
+        # Winbox path
+        winbox_path_layout = QHBoxLayout()
+        self._winbox_path_edit = QLineEdit()
+        self._winbox_path_edit.setReadOnly(True)
+        self._winbox_path_edit.setPlaceholderText("Nenhum caminho configurado")
+        winbox_path_layout.addWidget(self._winbox_path_edit)
+
+        winbox_browse_btn = QPushButton("Procurar...")
+        winbox_browse_btn.setFixedWidth(100)
+        winbox_browse_btn.clicked.connect(self._browse_winbox)
+        winbox_path_layout.addWidget(winbox_browse_btn)
+
+        winbox_layout.addRow("Executavel:", winbox_path_layout)
+
+        layout.addWidget(winbox_group)
+
         # Buttons
         buttons_layout = QHBoxLayout()
         buttons_layout.addStretch()
@@ -422,6 +442,9 @@ class SettingsDialog(QDialog):
             self._security_label.setStyleSheet("color: #f14c4c;")
             self._change_password_btn.setText("Definir Senha Mestra...")
 
+        # Winbox path
+        self._winbox_path_edit.setText(dm.settings.winbox_path or "")
+
     def _toggle_api_key_visibility(self) -> None:
         """Toggle API key visibility."""
         if self._api_key_edit.echoMode() == QLineEdit.EchoMode.Password:
@@ -475,6 +498,8 @@ class SettingsDialog(QDialog):
         if chat_position:
             dm.set_chat_position(chat_position)
         dm.set_max_conversations_per_host(self._max_conversations_spin.value())
+        dm.settings.winbox_path = self._winbox_path_edit.text()
+        dm.save()
 
         QMessageBox.information(
             self,
@@ -635,6 +660,21 @@ class SettingsDialog(QDialog):
                     "Erro",
                     f"Falha ao importar:\n{str(e)}"
                 )
+
+    def _browse_winbox(self) -> None:
+        """Handle browse for Winbox executable."""
+        current_path = self._winbox_path_edit.text()
+        start_dir = str(Path(current_path).parent) if current_path else ""
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Selecionar Executavel do Winbox",
+            start_dir,
+            "Executaveis (*.exe);;Todos os arquivos (*.*)"
+        )
+
+        if file_path:
+            self._winbox_path_edit.setText(file_path)
 
     def closeEvent(self, event) -> None:
         """Handle dialog close."""
