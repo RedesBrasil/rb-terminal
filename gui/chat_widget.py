@@ -6,14 +6,12 @@ Provides a chat interface for communicating with the AI agent.
 import logging
 from typing import Optional, List, Tuple
 from datetime import datetime
-import html
-import re
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit,
     QPushButton, QLabel, QScrollArea,
     QFrame, QSizePolicy, QStyle, QToolButton,
-    QComboBox
+    QComboBox, QTextBrowser
 )
 from PySide6.QtCore import Qt, Signal, Slot, QTimer, QSize
 from PySide6.QtGui import QKeyEvent
@@ -83,11 +81,6 @@ class ChatInputField(QTextEdit):
 class MessageBubble(QFrame):
     """A message bubble for displaying chat messages."""
 
-    @staticmethod
-    def _to_markdown_safe(text: str) -> str:
-        """Escape HTML but preserve markdown syntax."""
-        return html.escape(text)
-
     def __init__(self, text: str, is_user: bool, parent: Optional[QWidget] = None):
         super().__init__(parent)
 
@@ -100,52 +93,72 @@ class MessageBubble(QFrame):
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 4, 10, 4)
+        layout.setContentsMargins(12, 8, 12, 8)
         layout.setSpacing(0)
 
-        # Message label
-        label = QLabel()
-        label.setWordWrap(True)
-        label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        label.setTextFormat(Qt.TextFormat.MarkdownText)
-        label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse
-            | Qt.TextInteractionFlag.TextSelectableByKeyboard
-            | Qt.TextInteractionFlag.LinksAccessibleByMouse
-        )
-        label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
-        label.setText(self._to_markdown_safe(text))
-        label.setOpenExternalLinks(True)
+        # Use QTextBrowser for better text rendering and auto-sizing
+        self._browser = QTextBrowser()
+        self._browser.setOpenExternalLinks(True)
+        self._browser.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._browser.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._browser.setFrameShape(QFrame.Shape.NoFrame)
+        self._browser.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+        # Set markdown content
+        self._browser.setMarkdown(text)
 
         # Style based on sender
         if is_user:
-            self.setStyleSheet("""
-                QFrame {
-                    background-color: #0e639c;
-                    border-radius: 8px;
-                }
-            """)
-            label.setStyleSheet("""
-                QLabel {
-                    background-color: transparent;
-                    color: white;
-                }
-            """)
+            bg_color = "#0e639c"
+            text_color = "white"
         else:
-            self.setStyleSheet("""
-                QFrame {
-                    background-color: #3c3c3c;
-                    border-radius: 8px;
-                }
-            """)
-            label.setStyleSheet("""
-                QLabel {
-                    background-color: transparent;
-                    color: #dcdcdc;
-                }
-            """)
+            bg_color = "#3c3c3c"
+            text_color = "#dcdcdc"
 
-        layout.addWidget(label)
+        self.setStyleSheet(f"""
+            QFrame {{
+                background-color: {bg_color};
+                border-radius: 8px;
+            }}
+        """)
+        self._browser.setStyleSheet(f"""
+            QTextBrowser {{
+                background-color: transparent;
+                color: {text_color};
+                border: none;
+            }}
+        """)
+
+        layout.addWidget(self._browser)
+
+        # Track if height needs update
+        self._height_valid = False
+
+    def resizeEvent(self, event) -> None:
+        """Recalculate height when width changes."""
+        super().resizeEvent(event)
+        self._update_browser_height()
+
+    def showEvent(self, event) -> None:
+        """Calculate height when shown."""
+        super().showEvent(event)
+        QTimer.singleShot(0, self._update_browser_height)
+
+    def _update_browser_height(self) -> None:
+        """Update browser height based on content and available width."""
+        # Get available width (frame width minus margins)
+        available_width = self.width() - 24  # 12 + 12 margins
+        if available_width < 50:
+            return
+
+        doc = self._browser.document()
+        doc.setTextWidth(available_width)
+
+        # Calculate required height with some padding
+        content_height = int(doc.size().height())
+        required_height = max(content_height + 2, 20)
+
+        self._browser.setFixedHeight(required_height)
 
     @property
     def text(self) -> str:
@@ -453,10 +466,9 @@ class ChatWidget(QWidget):
         # Remove the stretch at the end
         stretch_item = self._messages_layout.takeAt(self._messages_layout.count() - 1)
 
-        # Add message bubble
+        # Add message bubble - no alignment restriction to use full width
         bubble = MessageBubble(normalized, is_user)
-        alignment = Qt.AlignmentFlag.AlignRight if is_user else Qt.AlignmentFlag.AlignLeft
-        self._messages_layout.addWidget(bubble, alignment=alignment)
+        self._messages_layout.addWidget(bubble)
 
         # Re-add stretch
         self._messages_layout.addStretch()
