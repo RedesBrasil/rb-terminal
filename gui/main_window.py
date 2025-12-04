@@ -234,6 +234,7 @@ class MainWindow(QMainWindow):
                 width: 16px;
                 height: 16px;
                 margin: 2px;
+                image: url(resources/close.svg);
             }
             QTabBar::close-button:hover {
                 background-color: #e81123;
