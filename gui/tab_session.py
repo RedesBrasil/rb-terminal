@@ -39,6 +39,13 @@ class TabSession:
     output_buffer: list = field(default_factory=list)
     connection_status: str = "disconnected"  # disconnected, connecting, connected
     chat_state: ChatState = field(default_factory=ChatState)
+    # Additional host metadata for AI context
+    manufacturer: Optional[str] = None
+    os_version: Optional[str] = None
+    functions: Optional[List[str]] = None
+    groups: Optional[List[str]] = None
+    tags: Optional[List[str]] = None
+    notes: Optional[str] = None
 
     @property
     def is_connected(self) -> bool:

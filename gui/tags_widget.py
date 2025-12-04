@@ -168,7 +168,7 @@ class TagChip(QFrame):
 
 
 class TagInputLineEdit(QLineEdit):
-    """Custom QLineEdit that shows completer popup on focus."""
+    """Custom QLineEdit that shows completer popup on click."""
 
     focus_in = Signal()
 
@@ -176,18 +176,30 @@ class TagInputLineEdit(QLineEdit):
         super().__init__(parent)
 
     def focusInEvent(self, event: QFocusEvent):
-        """Show completer popup when input receives focus."""
+        """Handle focus in - just emit signal, don't show completer."""
         super().focusInEvent(event)
-        self._show_completer()
+        # Only emit signal to update completer data, don't show popup
+        self.focus_in.emit()
 
     def mousePressEvent(self, event):
         """Show completer popup when clicking on input."""
         super().mousePressEvent(event)
-        self._show_completer()
+        # Only show completer on direct click
+        if self.hasFocus():
+            self._show_completer()
+
+    def keyPressEvent(self, event):
+        """Handle key press - prevent Enter from propagating to dialog."""
+        from PySide6.QtCore import Qt as QtCore
+        if event.key() in (QtCore.Key.Key_Return, QtCore.Key.Key_Enter):
+            # Emit returnPressed signal but don't propagate to parent dialog
+            self.returnPressed.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     def _show_completer(self):
-        """Emit signal and show completer."""
-        self.focus_in.emit()
+        """Show completer popup."""
         if self.completer():
             QTimer.singleShot(0, self.completer().complete)
 
@@ -374,3 +386,193 @@ class TagsWidget(QWidget):
         """Clear all selected tags."""
         for tag in list(self._selected_tags):
             self._remove_tag(tag)
+
+
+class ChipsWidget(QWidget):
+    """Generic widget for managing multiple values with chips and autocomplete."""
+
+    values_changed = Signal(list)
+
+    def __init__(
+        self,
+        get_available_fn,
+        add_value_fn=None,
+        placeholder: str = "Adicionar...",
+        parent=None
+    ):
+        """
+        Args:
+            get_available_fn: Function to get available autocomplete values
+            add_value_fn: Optional function to save new values to data manager
+            placeholder: Placeholder text for input
+        """
+        super().__init__(parent)
+        self._get_available = get_available_fn
+        self._save_value_fn = add_value_fn
+        self._placeholder = placeholder
+        self._selected_values: list[str] = []
+        self._chip_widgets: dict[str, TagChip] = {}
+        self._setup_ui()
+
+    def _setup_ui(self):
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(4)
+
+        # Input field with autocomplete
+        self._input = TagInputLineEdit()
+        self._input.setPlaceholderText(self._placeholder)
+        self._input.setStyleSheet("""
+            QLineEdit {
+                background-color: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                padding: 6px;
+                color: #dcdcdc;
+            }
+            QLineEdit:focus {
+                border: 1px solid #007acc;
+            }
+        """)
+        self._input.returnPressed.connect(self._add_current_value)
+        self._input.textChanged.connect(self._on_text_changed)
+        self._input.focus_in.connect(self._update_completer)
+        main_layout.addWidget(self._input)
+
+        # Setup autocomplete
+        self._completer = QCompleter()
+        self._completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        self._completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        self._completer_model = QStringListModel()
+        self._completer.setModel(self._completer_model)
+        self._completer.activated.connect(self._on_completer_activated)
+        self._input.setCompleter(self._completer)
+
+        # Style the completer popup
+        popup = self._completer.popup()
+        popup.setStyleSheet("""
+            QListView {
+                background-color: #2d2d2d;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                color: #dcdcdc;
+            }
+            QListView::item {
+                padding: 6px 8px;
+            }
+            QListView::item:selected {
+                background-color: #094771;
+            }
+            QListView::item:hover:!selected {
+                background-color: #383838;
+            }
+        """)
+
+        # Chips container with FlowLayout
+        self._chips_container = QWidget()
+        self._chips_container.setStyleSheet("background: transparent;")
+        self._chips_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self._chips_layout = FlowLayout(self._chips_container, margin=2, spacing=4)
+        self._chips_container.hide()
+
+        main_layout.addWidget(self._chips_container)
+        self._update_completer()
+
+    def _on_text_changed(self, text: str):
+        """Handle text change - check for comma."""
+        if ',' in text:
+            clean_text = text.replace(',', '').strip()
+            self._input.setText(clean_text)
+            if clean_text:
+                self._add_value(clean_text)
+                self._input.clear()
+
+    def _on_completer_activated(self, text: str):
+        """Handle completer selection."""
+        self._add_value(text)
+        QTimer.singleShot(0, self._clear_and_show_completer)
+
+    def _clear_and_show_completer(self):
+        """Clear input and show completer with remaining values."""
+        self._input.clear()
+        self._update_completer()
+        if self._completer_model.rowCount() > 0:
+            self._completer.complete()
+
+    def _add_current_value(self):
+        """Add the current input text as a value."""
+        text = self._input.text().strip()
+        if text:
+            self._add_value(text)
+            self._input.clear()
+
+    def _add_value(self, value: str):
+        """Add a value to the selected list."""
+        value = value.strip()
+        if not value or value in self._selected_values:
+            return
+
+        self._selected_values.append(value)
+
+        # Save new value if callback provided
+        if self._save_value_fn and callable(self._save_value_fn):
+            available = self._get_available()
+            if value not in available:
+                self._save_value_fn(value)
+                self._update_completer()
+
+        # Create chip widget
+        chip = TagChip(value)
+        chip.removed.connect(self._remove_value)
+        self._chip_widgets[value] = chip
+        self._chips_layout.addWidget(chip)
+
+        # Show chips container and update layout
+        self._chips_container.show()
+        self._chips_layout.invalidate()
+        self._chips_container.updateGeometry()
+        self._chips_container.adjustSize()
+
+        self.values_changed.emit(self._selected_values.copy())
+
+    def _remove_value(self, value: str):
+        """Remove a value from the selected list."""
+        if value not in self._selected_values:
+            return
+
+        self._selected_values.remove(value)
+
+        if value in self._chip_widgets:
+            chip = self._chip_widgets.pop(value)
+            chip.deleteLater()
+
+        if not self._selected_values:
+            self._chips_container.hide()
+        else:
+            self._chips_layout.invalidate()
+            self._chips_container.updateGeometry()
+            self._chips_container.adjustSize()
+
+        self.values_changed.emit(self._selected_values.copy())
+
+    def _update_completer(self):
+        """Update completer with available values (excluding selected)."""
+        available = self._get_available()
+        filtered = [v for v in available if v not in self._selected_values]
+        self._completer_model.setStringList(filtered)
+
+    def set_values(self, values: list[str]):
+        """Set the currently selected values."""
+        for value in list(self._selected_values):
+            self._remove_value(value)
+        for value in values:
+            self._add_value(value)
+
+    def get_values(self) -> list[str]:
+        """Get the currently selected values."""
+        return self._selected_values.copy()
+
+    def clear(self):
+        """Clear all selected values."""
+        for value in list(self._selected_values):
+            self._remove_value(value)

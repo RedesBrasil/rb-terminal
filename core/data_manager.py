@@ -54,6 +54,10 @@ class Settings:
     hosts_view_mode: str = "cards"
     hosts_sort_by: str = "name"
     max_conversations_per_host: int = 10
+    available_manufacturers: list = field(default_factory=list)
+    available_os_versions: list = field(default_factory=list)
+    available_functions: list = field(default_factory=list)
+    available_groups: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -70,6 +74,10 @@ class Settings:
             hosts_view_mode=data.get("hosts_view_mode", "cards") or "cards",
             hosts_sort_by=data.get("hosts_sort_by", "name") or "name",
             max_conversations_per_host=int(data.get("max_conversations_per_host", 10) or 10),
+            available_manufacturers=data.get("available_manufacturers", []),
+            available_os_versions=data.get("available_os_versions", []),
+            available_functions=data.get("available_functions", []),
+            available_groups=data.get("available_groups", []),
         )
 
 
@@ -87,6 +95,11 @@ class Host:
     disable_terminal_detection: bool = False
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     tags: list = field(default_factory=list)
+    manufacturer: Optional[str] = None
+    os_version: Optional[str] = None
+    functions: list = field(default_factory=list)
+    groups: list = field(default_factory=list)
+    notes: Optional[str] = None
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -113,7 +126,12 @@ class Host:
             device_type=data.get("device_type"),
             disable_terminal_detection=data.get("disable_terminal_detection", False),
             created_at=data.get("created_at", datetime.now().isoformat()),
-            tags=data.get("tags", [])
+            tags=data.get("tags", []),
+            manufacturer=data.get("manufacturer"),
+            os_version=data.get("os_version"),
+            functions=data.get("functions", []),
+            groups=data.get("groups", []),
+            notes=data.get("notes"),
         )
 
 
@@ -680,6 +698,46 @@ class DataManager:
             self._settings.available_tags.remove(tag)
             self._save()
 
+    def get_manufacturers(self) -> List[str]:
+        return list(self._settings.available_manufacturers)
+
+    def add_manufacturer(self, value: str) -> None:
+        value = value.strip()
+        if value and value not in self._settings.available_manufacturers:
+            self._settings.available_manufacturers.append(value)
+            self._settings.available_manufacturers.sort()
+            self._save()
+
+    def get_os_versions(self) -> List[str]:
+        return list(self._settings.available_os_versions)
+
+    def add_os_version(self, value: str) -> None:
+        value = value.strip()
+        if value and value not in self._settings.available_os_versions:
+            self._settings.available_os_versions.append(value)
+            self._settings.available_os_versions.sort()
+            self._save()
+
+    def get_functions(self) -> List[str]:
+        return list(self._settings.available_functions)
+
+    def add_function(self, value: str) -> None:
+        value = value.strip()
+        if value and value not in self._settings.available_functions:
+            self._settings.available_functions.append(value)
+            self._settings.available_functions.sort()
+            self._save()
+
+    def get_groups(self) -> List[str]:
+        return list(self._settings.available_groups)
+
+    def add_group(self, value: str) -> None:
+        value = value.strip()
+        if value and value not in self._settings.available_groups:
+            self._settings.available_groups.append(value)
+            self._settings.available_groups.sort()
+            self._save()
+
     def get_hosts_view_mode(self) -> str:
         mode = self._settings.hosts_view_mode
         return mode if mode in {"cards", "list"} else "cards"
@@ -801,7 +859,12 @@ class DataManager:
         terminal_type: str = "xterm",
         device_type: Optional[str] = None,
         disable_terminal_detection: bool = False,
-        tags: Optional[list] = None
+        tags: Optional[list] = None,
+        manufacturer: Optional[str] = None,
+        os_version: Optional[str] = None,
+        functions: Optional[list] = None,
+        groups: Optional[list] = None,
+        notes: Optional[str] = None
     ) -> Host:
         """Add a new host."""
         password_encrypted = None
@@ -817,7 +880,12 @@ class DataManager:
             terminal_type=terminal_type,
             device_type=device_type if device_type else None,
             disable_terminal_detection=disable_terminal_detection,
-            tags=tags if tags else []
+            tags=tags if tags else [],
+            manufacturer=manufacturer if manufacturer else None,
+            os_version=os_version if os_version else None,
+            functions=functions if functions else [],
+            groups=groups if groups else [],
+            notes=notes if notes else None
         )
 
         self._hosts.append(new_host)
@@ -837,7 +905,12 @@ class DataManager:
         device_type: Optional[str] = None,
         disable_terminal_detection: Optional[bool] = None,
         clear_password: bool = False,
-        tags: Optional[list] = None
+        tags: Optional[list] = None,
+        manufacturer: Optional[str] = None,
+        os_version: Optional[str] = None,
+        functions: Optional[list] = None,
+        groups: Optional[list] = None,
+        notes: Optional[str] = None
     ) -> Optional[Host]:
         """Update an existing host."""
         existing = self.get_host_by_id(host_id)
@@ -860,6 +933,16 @@ class DataManager:
             existing.disable_terminal_detection = disable_terminal_detection
         if tags is not None:
             existing.tags = tags
+        if manufacturer is not None:
+            existing.manufacturer = manufacturer if manufacturer else None
+        if os_version is not None:
+            existing.os_version = os_version if os_version else None
+        if functions is not None:
+            existing.functions = functions
+        if groups is not None:
+            existing.groups = groups
+        if notes is not None:
+            existing.notes = notes if notes else None
 
         if clear_password:
             existing.password_encrypted = None

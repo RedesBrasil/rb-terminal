@@ -8,15 +8,39 @@ from typing import Optional
 from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QLineEdit, QPushButton, QSpinBox, QComboBox,
-    QCheckBox, QDialogButtonBox, QMessageBox, QFrame, QWidget
+    QCheckBox, QDialogButtonBox, QMessageBox, QFrame, QWidget,
+    QTextEdit
 )
 from PySide6.QtCore import Qt, Signal
 
 from core.data_manager import DataManager, Host
 from core.device_types import get_device_types_manager
-from gui.tags_widget import TagsWidget
+from gui.tags_widget import TagsWidget, ChipsWidget
 
 logger = logging.getLogger(__name__)
+
+# Default values for autocomplete fields
+DEFAULT_MANUFACTURERS = [
+    "MikroTik",
+    "Huawei",
+    "Linux",
+    "Cisco",
+    "Datacom",
+]
+
+DEFAULT_OS_VERSIONS = [
+    "RouterOS v7",
+    "RouterOS v6",
+    "Debian 11",
+]
+
+DEFAULT_FUNCTIONS = [
+    "Borda",
+    "Firewall",
+    "CGNAT",
+    "Servidor de Logs",
+    "Monitoramento",
+]
 
 
 class HostDialog(QDialog):
@@ -102,20 +126,105 @@ class HostDialog(QDialog):
 
         form.addRow("Senha:", password_layout)
 
-        # Device type (editable combobox)
+        # === Additional Info section (collapsible) ===
+        self._info_toggle = QPushButton("▶ Informações Adicionais")
+        self._info_toggle.setCheckable(True)
+        self._info_toggle.setStyleSheet("text-align: left; padding: 5px; background: transparent; border: none; color: #888888;")
+        self._info_toggle.toggled.connect(self._toggle_info_section)
+        form.addRow("", self._info_toggle)
+
+        self._info_section = QWidget()
+        self._info_layout = QFormLayout()
+        self._info_layout.setLabelAlignment(Qt.AlignmentFlag.AlignRight)
+        self._info_section.setLayout(self._info_layout)
+        self._info_section.setVisible(False)  # Hidden by default
+
+        # Fabricante (editable combobox)
+        self._manufacturer = QComboBox()
+        self._manufacturer.setEditable(True)
+        self._manufacturer.addItem("")
+        # Add defaults first, then saved values (without duplicates)
+        manufacturer_items = DEFAULT_MANUFACTURERS.copy()
+        for saved in self._data_manager.get_manufacturers():
+            if saved not in manufacturer_items:
+                manufacturer_items.append(saved)
+        self._manufacturer.addItems(manufacturer_items)
+        self._manufacturer.setCurrentText("")
+        self._manufacturer.lineEdit().setPlaceholderText("Ex: MikroTik, Cisco, Huawei...")
+        self._info_layout.addRow("Fabricante:", self._manufacturer)
+
+        # OS / Versão (editable combobox)
+        self._os_version = QComboBox()
+        self._os_version.setEditable(True)
+        self._os_version.addItem("")
+        # Add defaults first, then saved values (without duplicates)
+        os_items = DEFAULT_OS_VERSIONS.copy()
+        for saved in self._data_manager.get_os_versions():
+            if saved not in os_items:
+                os_items.append(saved)
+        self._os_version.addItems(os_items)
+        self._os_version.setCurrentText("")
+        self._os_version.lineEdit().setPlaceholderText("Ex: RouterOS v7, Debian 11...")
+        self._info_layout.addRow("OS / Versão:", self._os_version)
+
+        # Função (chips widget - multiple values)
+        def get_functions_with_defaults():
+            """Get functions combining defaults with saved values."""
+            items = DEFAULT_FUNCTIONS.copy()
+            for saved in self._data_manager.get_functions():
+                if saved not in items:
+                    items.append(saved)
+            return items
+
+        self._functions_widget = ChipsWidget(
+            get_available_fn=get_functions_with_defaults,
+            add_value_fn=self._data_manager.add_function,
+            placeholder="Adicionar função..."
+        )
+        self._info_layout.addRow("Função:", self._functions_widget)
+
+        # Grupos (chips widget - multiple values)
+        self._groups_widget = ChipsWidget(
+            get_available_fn=self._data_manager.get_groups,
+            add_value_fn=self._data_manager.add_group,
+            placeholder="Adicionar grupo..."
+        )
+        self._info_layout.addRow("Grupos:", self._groups_widget)
+
+        # Tags (moved from main form)
+        self._tags_widget = TagsWidget()
+        self._info_layout.addRow("Tags:", self._tags_widget)
+
+        # Tipo de Dispositivo (moved from main form)
         self._device_type = QComboBox()
         self._device_type.setEditable(True)
-        self._device_type.addItem("")  # Empty option for optional field
+        self._device_type.addItem("")
         self._device_type.addItems(get_device_types_manager().get_all())
         self._device_type.setCurrentText("")
-        self._device_type.lineEdit().setPlaceholderText("Ex: Linux, MikroTik, Cisco...")
-        form.addRow("Tipo Dispositivo:", self._device_type)
+        self._device_type.lineEdit().setPlaceholderText("Ex: Roteador, Switch, OLT...")
+        self._info_layout.addRow("Tipo Dispositivo:", self._device_type)
 
-        # Tags
-        self._tags_widget = TagsWidget()
-        form.addRow("Tags:", self._tags_widget)
+        # Observações (QTextEdit for long text)
+        self._notes = QTextEdit()
+        self._notes.setPlaceholderText("Notas e observações sobre este host...")
+        self._notes.setMaximumHeight(80)
+        self._notes.setStyleSheet("""
+            QTextEdit {
+                background-color: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                padding: 6px;
+                color: #dcdcdc;
+            }
+            QTextEdit:focus {
+                border: 1px solid #007acc;
+            }
+        """)
+        self._info_layout.addRow("Observações:", self._notes)
 
-        # Advanced options section (collapsible)
+        form.addRow("", self._info_section)
+
+        # === Advanced options section (collapsible) ===
         self._advanced_toggle = QPushButton("▶ Opções Avançadas")
         self._advanced_toggle.setCheckable(True)
         self._advanced_toggle.setStyleSheet("text-align: left; padding: 5px; background: transparent; border: none; color: #888888;")
@@ -141,7 +250,7 @@ class HostDialog(QDialog):
         # Info label
         info_label = QLabel(
             "Dica: Usuário e senha são opcionais - o terminal pedirá se não fornecidos.\n"
-            "O tipo de dispositivo ajuda a IA a usar comandos apropriados."
+            "Informações adicionais ajudam a IA a usar comandos apropriados."
         )
         info_label.setStyleSheet("color: #888888; font-size: 11px;")
         info_label.setWordWrap(True)
@@ -254,6 +363,18 @@ class HostDialog(QDialog):
         if self._host.password_encrypted:
             self._pass_input.setPlaceholderText("••••••••  (senha salva)")
 
+        # New fields
+        if self._host.manufacturer:
+            self._manufacturer.setCurrentText(self._host.manufacturer)
+        if self._host.os_version:
+            self._os_version.setCurrentText(self._host.os_version)
+        if self._host.functions:
+            self._functions_widget.set_values(self._host.functions)
+        if self._host.groups:
+            self._groups_widget.set_values(self._host.groups)
+        if self._host.notes:
+            self._notes.setPlainText(self._host.notes)
+
     def _toggle_password_visibility(self, checked: bool) -> None:
         """Toggle password visibility."""
         if checked:
@@ -266,6 +387,14 @@ class HostDialog(QDialog):
         self._pass_input.setEnabled(not checked)
         if checked:
             self._pass_input.clear()
+
+    def _toggle_info_section(self, checked: bool) -> None:
+        """Toggle additional info section visibility."""
+        self._info_section.setVisible(checked)
+        if checked:
+            self._info_toggle.setText("▼ Informações Adicionais")
+        else:
+            self._info_toggle.setText("▶ Informações Adicionais")
 
     def _toggle_advanced_options(self, checked: bool) -> None:
         """Toggle advanced options visibility."""
@@ -286,6 +415,13 @@ class HostDialog(QDialog):
         device_type = self._device_type.currentText().strip()
         tags = self._tags_widget.get_tags()
 
+        # New fields
+        manufacturer = self._manufacturer.currentText().strip()
+        os_version = self._os_version.currentText().strip()
+        functions = self._functions_widget.get_values()
+        groups = self._groups_widget.get_values()
+        notes = self._notes.toPlainText().strip()
+
         # Validation
         if not name:
             QMessageBox.warning(self, "Erro", "Digite um nome para o host.")
@@ -303,6 +439,12 @@ class HostDialog(QDialog):
         if device_type:
             get_device_types_manager().ensure_exists(device_type)
 
+        # Save new autocomplete values
+        if manufacturer:
+            self._data_manager.add_manufacturer(manufacturer)
+        if os_version:
+            self._data_manager.add_os_version(os_version)
+
         try:
             if self._is_edit_mode:
                 # Update existing host
@@ -318,7 +460,12 @@ class HostDialog(QDialog):
                     device_type=device_type if device_type else None,
                     disable_terminal_detection=False,
                     clear_password=clear_password,
-                    tags=tags
+                    tags=tags,
+                    manufacturer=manufacturer if manufacturer else None,
+                    os_version=os_version if os_version else None,
+                    functions=functions,
+                    groups=groups,
+                    notes=notes if notes else None
                 )
             else:
                 # Add new host
@@ -331,7 +478,12 @@ class HostDialog(QDialog):
                     terminal_type=terminal_type,
                     device_type=device_type if device_type else None,
                     disable_terminal_detection=False,
-                    tags=tags
+                    tags=tags,
+                    manufacturer=manufacturer if manufacturer else None,
+                    os_version=os_version if os_version else None,
+                    functions=functions,
+                    groups=groups,
+                    notes=notes if notes else None
                 )
 
             self.accept()
@@ -524,7 +676,7 @@ class QuickConnectDialog(QDialog):
         self._device_type.addItem("")  # Empty option for optional field
         self._device_type.addItems(get_device_types_manager().get_all())
         self._device_type.setCurrentText("")
-        self._device_type.lineEdit().setPlaceholderText("Ex: Linux, MikroTik, Cisco...")
+        self._device_type.lineEdit().setPlaceholderText("Ex: Roteador, Switch, OLT...")
         form.addRow("Tipo Dispositivo:", self._device_type)
 
         # Advanced options section (collapsible)

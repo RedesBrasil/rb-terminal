@@ -909,7 +909,13 @@ class MainWindow(QMainWindow):
         terminal_type: str,
         device_type: Optional[str],
         host_id: Optional[str] = None,
-        host_name: Optional[str] = None
+        host_name: Optional[str] = None,
+        manufacturer: Optional[str] = None,
+        os_version: Optional[str] = None,
+        functions: Optional[list] = None,
+        groups: Optional[list] = None,
+        tags: Optional[list] = None,
+        notes: Optional[str] = None
     ) -> None:
         """
         Unified connection method for both saved hosts and quick connect.
@@ -929,6 +935,12 @@ class MainWindow(QMainWindow):
             device_type: Device type for AI context (Linux, MikroTik, etc.)
             host_id: Host ID for saved hosts (None for quick connect)
             host_name: Display name for saved hosts
+            manufacturer: Device manufacturer
+            os_version: Operating system and version
+            functions: Device functions/roles
+            groups: Device groups
+            tags: Device tags
+            notes: Additional notes about the device
         """
         if session is None:
             session = self._get_active_session()
@@ -940,6 +952,12 @@ class MainWindow(QMainWindow):
         session.host_id = host_id
         session.host_name = host_name
         session.device_type = device_type
+        session.manufacturer = manufacturer
+        session.os_version = os_version
+        session.functions = functions
+        session.groups = groups
+        session.tags = tags
+        session.notes = notes
 
         # Check if we need to ask for credentials in terminal (like PuTTY)
         need_username = not username
@@ -999,7 +1017,13 @@ class MainWindow(QMainWindow):
             terminal_type=host.terminal_type,
             device_type=host.device_type,
             host_id=host_id,
-            host_name=host.name
+            host_name=host.name,
+            manufacturer=host.manufacturer,
+            os_version=host.os_version,
+            functions=host.functions,
+            groups=host.groups,
+            tags=host.tags,
+            notes=host.notes
         )
 
     def _edit_host(self, host_id: str) -> None:
@@ -1057,7 +1081,13 @@ class MainWindow(QMainWindow):
             execute_command=execute_command,
             on_command_executed=on_command_executed,
             on_thinking=on_thinking,
-            device_type=session.device_type
+            device_type=session.device_type,
+            manufacturer=session.manufacturer,
+            os_version=session.os_version,
+            functions=session.functions,
+            groups=session.groups,
+            tags=session.tags,
+            notes=session.notes
         )
 
     def _create_disconnect_callback_for_session(self, session: TabSession):

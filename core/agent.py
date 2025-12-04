@@ -23,6 +23,13 @@ class AgentDeps:
     on_command_executed: Optional[Callable[[str, str], None]] = None  # Callback(cmd, output)
     on_thinking: Optional[Callable[[str], None]] = None  # Callback for AI thinking
     device_type: Optional[str] = None  # Type of device (Linux, MikroTik, etc.)
+    # Additional host metadata for context
+    manufacturer: Optional[str] = None
+    os_version: Optional[str] = None
+    functions: Optional[list] = None
+    groups: Optional[list] = None
+    tags: Optional[list] = None
+    notes: Optional[str] = None
 
 
 class SSHAgent:
@@ -107,6 +114,30 @@ Você tem acesso à ferramenta execute_command para rodar comandos no terminal S
             else:
                 # Generic message for custom device types
                 prompt += f"\n\nVocê está conectado a um dispositivo do tipo: {device_type}. Use comandos apropriados para este sistema."
+
+        # Add additional host metadata context
+        context_parts = []
+
+        if self.deps.manufacturer:
+            context_parts.append(f"Fabricante: {self.deps.manufacturer}")
+
+        if self.deps.os_version:
+            context_parts.append(f"Sistema/Versão: {self.deps.os_version}")
+
+        if self.deps.functions:
+            context_parts.append(f"Funções: {', '.join(self.deps.functions)}")
+
+        if self.deps.groups:
+            context_parts.append(f"Grupos: {', '.join(self.deps.groups)}")
+
+        if self.deps.tags:
+            context_parts.append(f"Tags: {', '.join(self.deps.tags)}")
+
+        if self.deps.notes:
+            context_parts.append(f"Observações: {self.deps.notes}")
+
+        if context_parts:
+            prompt += "\n\nInformações adicionais sobre este dispositivo:\n- " + "\n- ".join(context_parts)
 
         return prompt
 
@@ -335,7 +366,13 @@ def create_agent(
     execute_command: Callable[[str], Any],
     on_command_executed: Optional[Callable[[str, str], None]] = None,
     on_thinking: Optional[Callable[[str], None]] = None,
-    device_type: Optional[str] = None
+    device_type: Optional[str] = None,
+    manufacturer: Optional[str] = None,
+    os_version: Optional[str] = None,
+    functions: Optional[list] = None,
+    groups: Optional[list] = None,
+    tags: Optional[list] = None,
+    notes: Optional[str] = None
 ) -> SSHAgent:
     """
     Create an SSH Agent instance.
@@ -345,6 +382,12 @@ def create_agent(
         on_command_executed: Optional callback when command is executed
         on_thinking: Optional callback for agent thinking/status
         device_type: Type of device being connected (Linux, MikroTik, etc.)
+        manufacturer: Device manufacturer (e.g., Cisco, MikroTik)
+        os_version: Operating system and version
+        functions: Device functions/roles
+        groups: Device groups
+        tags: Device tags
+        notes: Additional notes about the device
 
     Returns:
         Configured SSHAgent instance
@@ -353,6 +396,12 @@ def create_agent(
         execute_command=execute_command,
         on_command_executed=on_command_executed,
         on_thinking=on_thinking,
-        device_type=device_type
+        device_type=device_type,
+        manufacturer=manufacturer,
+        os_version=os_version,
+        functions=functions,
+        groups=groups,
+        tags=tags,
+        notes=notes
     )
     return SSHAgent(deps)

@@ -14,10 +14,10 @@ logger = logging.getLogger(__name__)
 
 # Default device types that come pre-configured
 DEFAULT_DEVICE_TYPES = [
-    "Linux",
-    "MikroTik",
-    "Huawei",
-    "Cisco"
+    "Roteador",
+    "Switch",
+    "OLT",
+    "Servidor"
 ]
 
 
