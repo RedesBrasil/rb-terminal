@@ -1077,10 +1077,21 @@ class MainWindow(QMainWindow):
         def on_thinking(status: str) -> None:
             self._chat.set_status(status)
 
+        # Get connection info from config
+        host_address = session.config.host if session.config else None
+        host_port = session.config.port if session.config else None
+        username = session.config.username if session.config else None
+
         session.agent = create_agent(
             execute_command=execute_command,
             on_command_executed=on_command_executed,
             on_thinking=on_thinking,
+            # Host connection info
+            host_name=session.host_name,
+            host_address=host_address,
+            host_port=host_port,
+            username=username,
+            # Device metadata
             device_type=session.device_type,
             manufacturer=session.manufacturer,
             os_version=session.os_version,

@@ -22,8 +22,13 @@ class AgentDeps:
     execute_command: Callable[[str], Any]  # Async function to execute SSH commands
     on_command_executed: Optional[Callable[[str, str], None]] = None  # Callback(cmd, output)
     on_thinking: Optional[Callable[[str], None]] = None  # Callback for AI thinking
-    device_type: Optional[str] = None  # Type of device (Linux, MikroTik, etc.)
-    # Additional host metadata for context
+    # Host connection info
+    host_name: Optional[str] = None  # Display name of the host
+    host_address: Optional[str] = None  # IP address or hostname
+    host_port: Optional[int] = None  # SSH port
+    username: Optional[str] = None  # SSH username
+    # Device metadata
+    device_type: Optional[str] = None  # Type of device (Roteador, Switch, etc.)
     manufacturer: Optional[str] = None
     os_version: Optional[str] = None
     functions: Optional[list] = None
@@ -115,29 +120,50 @@ Você tem acesso à ferramenta execute_command para rodar comandos no terminal S
                 # Generic message for custom device types
                 prompt += f"\n\nVocê está conectado a um dispositivo do tipo: {device_type}. Use comandos apropriados para este sistema."
 
+        # Add host connection info
+        connection_info = []
+
+        if self.deps.host_name:
+            connection_info.append(f"Nome: {self.deps.host_name}")
+
+        if self.deps.host_address:
+            connection_info.append(f"Endereço: {self.deps.host_address}")
+
+        if self.deps.host_port:
+            connection_info.append(f"Porta: {self.deps.host_port}")
+
+        if self.deps.username:
+            connection_info.append(f"Usuário: {self.deps.username}")
+
+        if connection_info:
+            prompt += "\n\nInformações de conexão:\n- " + "\n- ".join(connection_info)
+
         # Add additional host metadata context
-        context_parts = []
+        metadata_parts = []
+
+        if self.deps.device_type:
+            metadata_parts.append(f"Tipo: {self.deps.device_type}")
 
         if self.deps.manufacturer:
-            context_parts.append(f"Fabricante: {self.deps.manufacturer}")
+            metadata_parts.append(f"Fabricante: {self.deps.manufacturer}")
 
         if self.deps.os_version:
-            context_parts.append(f"Sistema/Versão: {self.deps.os_version}")
+            metadata_parts.append(f"Sistema/Versão: {self.deps.os_version}")
 
         if self.deps.functions:
-            context_parts.append(f"Funções: {', '.join(self.deps.functions)}")
+            metadata_parts.append(f"Funções: {', '.join(self.deps.functions)}")
 
         if self.deps.groups:
-            context_parts.append(f"Grupos: {', '.join(self.deps.groups)}")
+            metadata_parts.append(f"Grupos: {', '.join(self.deps.groups)}")
 
         if self.deps.tags:
-            context_parts.append(f"Tags: {', '.join(self.deps.tags)}")
+            metadata_parts.append(f"Tags: {', '.join(self.deps.tags)}")
 
         if self.deps.notes:
-            context_parts.append(f"Observações: {self.deps.notes}")
+            metadata_parts.append(f"Observações: {self.deps.notes}")
 
-        if context_parts:
-            prompt += "\n\nInformações adicionais sobre este dispositivo:\n- " + "\n- ".join(context_parts)
+        if metadata_parts:
+            prompt += "\n\nMetadados do dispositivo:\n- " + "\n- ".join(metadata_parts)
 
         return prompt
 
@@ -366,6 +392,12 @@ def create_agent(
     execute_command: Callable[[str], Any],
     on_command_executed: Optional[Callable[[str, str], None]] = None,
     on_thinking: Optional[Callable[[str], None]] = None,
+    # Host connection info
+    host_name: Optional[str] = None,
+    host_address: Optional[str] = None,
+    host_port: Optional[int] = None,
+    username: Optional[str] = None,
+    # Device metadata
     device_type: Optional[str] = None,
     manufacturer: Optional[str] = None,
     os_version: Optional[str] = None,
@@ -381,7 +413,11 @@ def create_agent(
         execute_command: Async function to execute SSH commands
         on_command_executed: Optional callback when command is executed
         on_thinking: Optional callback for agent thinking/status
-        device_type: Type of device being connected (Linux, MikroTik, etc.)
+        host_name: Display name of the host
+        host_address: IP address or hostname
+        host_port: SSH port
+        username: SSH username
+        device_type: Type of device being connected (Roteador, Switch, etc.)
         manufacturer: Device manufacturer (e.g., Cisco, MikroTik)
         os_version: Operating system and version
         functions: Device functions/roles
@@ -396,6 +432,10 @@ def create_agent(
         execute_command=execute_command,
         on_command_executed=on_command_executed,
         on_thinking=on_thinking,
+        host_name=host_name,
+        host_address=host_address,
+        host_port=host_port,
+        username=username,
         device_type=device_type,
         manufacturer=manufacturer,
         os_version=os_version,
