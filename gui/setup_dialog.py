@@ -26,6 +26,16 @@ class SetupDialog(QDialog):
         self.setMinimumWidth(500)
         self.setModal(True)
 
+        # Force dark theme on dialog
+        self.setStyleSheet("""
+            QDialog {
+                background-color: #1e1e1e;
+            }
+            QLabel {
+                color: #e0e0e0;
+            }
+        """)
+
         self._master_password: str | None = None
         self._setup_ui()
 
@@ -104,32 +114,59 @@ class SetupDialog(QDialog):
 
         # Create content layout
         content = QWidget()
-        content_layout = QVBoxLayout(content)
-        content_layout.setContentsMargins(15, 10, 15, 10)
+        content.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        content_layout = QHBoxLayout(content)
+        content_layout.setContentsMargins(20, 15, 20, 15)
+
+        # Text container
+        text_container = QWidget()
+        text_container.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        text_layout = QVBoxLayout(text_container)
+        text_layout.setContentsMargins(0, 0, 0, 0)
+        text_layout.setSpacing(5)
 
         title_label = QLabel(title)
+        title_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
         title_font = QFont()
         title_font.setBold(True)
-        title_font.setPointSize(11)
+        title_font.setPointSize(12)
         title_label.setFont(title_font)
-        content_layout.addWidget(title_label)
+        title_label.setStyleSheet(f"color: #ffffff;")
+        text_layout.addWidget(title_label)
 
         desc_label = QLabel(description)
-        desc_label.setStyleSheet("color: #aaa;")
+        desc_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        desc_label.setStyleSheet("color: #b0b0b0;")
         desc_label.setWordWrap(True)
-        content_layout.addWidget(desc_label)
+        text_layout.addWidget(desc_label)
 
-        # Set button style
+        content_layout.addWidget(text_container, 1)
+
+        # Arrow indicator
+        arrow_label = QLabel("→")
+        arrow_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        arrow_font = QFont()
+        arrow_font.setPointSize(18)
+        arrow_label.setFont(arrow_font)
+        arrow_label.setStyleSheet(f"color: {color};")
+        content_layout.addWidget(arrow_label)
+
+        # Set button style with left border accent
         btn.setStyleSheet(f"""
             QPushButton {{
-                background-color: #2d2d2d;
-                border: 2px solid #3d3d3d;
+                background-color: #2a2a2a;
+                border: 2px solid #404040;
+                border-left: 4px solid {color};
                 border-radius: 8px;
                 text-align: left;
             }}
             QPushButton:hover {{
-                border-color: {color};
-                background-color: #353535;
+                background-color: #363636;
+                border: 2px solid {color};
+                border-left: 4px solid {color};
+            }}
+            QPushButton:pressed {{
+                background-color: #404040;
             }}
         """)
 
