@@ -611,6 +611,8 @@ class HostDialog(QDialog):
             self._info_toggle.setText("▼ Informações Adicionais")
         else:
             self._info_toggle.setText("▶ Informações Adicionais")
+        # Adjust dialog size after toggling section
+        self.adjustSize()
 
     def _toggle_advanced_options(self, checked: bool) -> None:
         """Toggle advanced options visibility."""
@@ -619,6 +621,8 @@ class HostDialog(QDialog):
             self._advanced_toggle.setText("▼ Opções Avançadas")
         else:
             self._advanced_toggle.setText("▶ Opções Avançadas")
+        # Adjust dialog size after toggling section
+        self.adjustSize()
 
     def _toggle_knock_section(self, checked: bool) -> None:
         """Toggle port knocking section visibility."""
@@ -627,6 +631,8 @@ class HostDialog(QDialog):
             self._knock_toggle.setText("▼ Port Knocking")
         else:
             self._knock_toggle.setText("▶ Port Knocking")
+        # Adjust dialog size after toggling section
+        self.adjustSize()
 
     def _add_knock_entry(self, protocol: str = "tcp", port: int = 0) -> None:
         """Add a new port knocking entry row."""
@@ -1094,6 +1100,8 @@ class QuickConnectDialog(QDialog):
             self._advanced_toggle.setText("▼ Opções Avançadas")
         else:
             self._advanced_toggle.setText("▶ Opções Avançadas")
+        # Adjust dialog size after toggling section
+        self.adjustSize()
 
     def _on_connect(self) -> None:
         """Handle connect button click."""
