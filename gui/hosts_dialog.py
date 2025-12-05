@@ -9,9 +9,9 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout,
     QLabel, QLineEdit, QPushButton, QSpinBox, QComboBox,
     QCheckBox, QDialogButtonBox, QMessageBox, QFrame, QWidget,
-    QTextEdit
+    QTextEdit, QListWidget, QListWidgetItem, QAbstractItemView
 )
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QSize
 
 from core.data_manager import DataManager, Host
 from core.device_types import get_device_types_manager
@@ -89,20 +89,34 @@ class HostDialog(QDialog):
         self._name_input.setPlaceholderText("Ex: Mikrotik Principal")
         form.addRow("Nome:", self._name_input)
 
-        # Host/IP section (multiple IPs support)
-        self._hosts_container = QWidget()
-        self._hosts_layout = QVBoxLayout()
-        self._hosts_layout.setContentsMargins(0, 0, 0, 0)
-        self._hosts_layout.setSpacing(5)
-        self._hosts_container.setLayout(self._hosts_layout)
+        # Host/IP section (multiple IPs support with drag-drop reordering)
+        self._hosts_list = QListWidget()
+        self._hosts_list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
+        self._hosts_list.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self._hosts_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self._hosts_list.setSpacing(2)
+        self._hosts_list.setStyleSheet("""
+            QListWidget {
+                background-color: transparent;
+                border: none;
+            }
+            QListWidget::item {
+                background-color: transparent;
+                border: none;
+                padding: 0px;
+            }
+            QListWidget::item:selected {
+                background-color: rgba(60, 60, 60, 0.5);
+            }
+        """)
 
         # List of host input entries
-        self._host_entries = []  # List of (input, row_widget)
+        self._host_entries = []  # List of (input, item)
 
         # Add first host entry (always visible, no remove button)
         self._add_host_entry(is_first=True)
 
-        form.addRow("Host/IP:", self._hosts_container)
+        form.addRow("Host/IP:", self._hosts_list)
 
         # Port
         self._port_input = QSpinBox()
@@ -479,11 +493,20 @@ class HostDialog(QDialog):
 
     def _add_host_entry(self, value: str = "", is_first: bool = False) -> None:
         """Add a new host/IP input row."""
+        # Create row widget
         row_widget = QWidget()
         row_layout = QHBoxLayout()
-        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setContentsMargins(0, 2, 0, 2)
         row_layout.setSpacing(5)
         row_widget.setLayout(row_layout)
+
+        # Drag handle (grip)
+        grip_label = QLabel("⋮⋮")
+        grip_label.setCursor(Qt.CursorShape.OpenHandCursor)
+        grip_label.setStyleSheet("color: #888888; font-weight: bold; font-size: 14px;")
+        grip_label.setFixedWidth(20)
+        grip_label.setToolTip("Arraste para reordenar")
+        row_layout.addWidget(grip_label)
 
         # Host input
         host_input = QLineEdit()
@@ -525,37 +548,60 @@ class HostDialog(QDialog):
                     background-color: #6a4a4a;
                 }
             """)
-            remove_btn.clicked.connect(lambda: self._remove_host_entry(row_widget))
+            remove_btn.clicked.connect(lambda rw=row_widget: self._remove_host_entry(rw))
             row_layout.addWidget(remove_btn)
 
-        # Store reference and add to layout
-        self._host_entries.append((host_input, row_widget))
-        self._hosts_layout.addWidget(row_widget)
+        # Create list item and add widget
+        item = QListWidgetItem()
+        item.setSizeHint(QSize(0, 36))
+        self._hosts_list.addItem(item)
+        self._hosts_list.setItemWidget(item, row_widget)
+
+        # Store reference
+        self._host_entries.append((host_input, item))
 
         # Focus the new input if not first
         if not is_first:
             host_input.setFocus()
 
-        # Force layout update
-        self.adjustSize()
+        # Update list height
+        self._update_hosts_list_height()
 
     def _remove_host_entry(self, row_widget: QWidget) -> None:
         """Remove a host/IP input row."""
-        for i, (_, widget) in enumerate(self._host_entries):
-            if widget == row_widget:
-                self._host_entries.pop(i)
-                self._hosts_layout.removeWidget(row_widget)
+        # Find the item by matching the widget
+        for i in range(self._hosts_list.count()):
+            item = self._hosts_list.item(i)
+            if self._hosts_list.itemWidget(item) == row_widget:
+                # Remove from entries list
+                self._host_entries = [(inp, it) for inp, it in self._host_entries if it != item]
+                # Remove from list widget
+                self._hosts_list.takeItem(i)
                 row_widget.deleteLater()
-                self.adjustSize()
+                self._update_hosts_list_height()
                 break
 
+    def _update_hosts_list_height(self) -> None:
+        """Update the hosts list height based on number of items."""
+        item_height = 40  # Height per item including spacing
+        count = self._hosts_list.count()
+        height = max(item_height, count * item_height)
+        self._hosts_list.setFixedHeight(height)
+
     def _get_hosts_list(self) -> list:
-        """Get list of hosts/IPs from input fields."""
+        """Get list of hosts/IPs from input fields in current order."""
         hosts = []
-        for host_input, _ in self._host_entries:
-            value = host_input.text().strip()
-            if value:
-                hosts.append(value)
+        # Iterate through list widget to get correct order after drag-drop
+        for i in range(self._hosts_list.count()):
+            item = self._hosts_list.item(i)
+            widget = self._hosts_list.itemWidget(item)
+            if widget:
+                # Find QLineEdit in the widget (it's the second child after the grip label)
+                line_edit = widget.findChild(QLineEdit)
+                if line_edit:
+                    value = line_edit.text().strip()
+                    if value:
+                        hosts.append(value)
         return hosts
 
     def _toggle_info_section(self, checked: bool) -> None:
