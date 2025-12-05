@@ -413,6 +413,143 @@ class SFTPManager:
             logger.error(f"Upload failed: {e}")
             raise
 
+    async def download_directory(
+        self,
+        remote_path: str,
+        local_path: str,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None
+    ) -> int:
+        """
+        Download a directory recursively from remote to local.
+
+        Args:
+            remote_path: Remote directory path
+            local_path: Local destination path
+            progress_callback: Optional callback(filename, bytes_transferred, total_bytes)
+
+        Returns:
+            Number of files downloaded
+        """
+        if not self._sftp:
+            raise RuntimeError("SFTP not connected")
+
+        abs_remote = self._resolve_path(remote_path)
+        local_dir = Path(local_path)
+        files_downloaded = 0
+
+        try:
+            # Get directory name and create local directory
+            dir_name = PurePosixPath(abs_remote).name
+            target_dir = local_dir / dir_name
+            target_dir.mkdir(parents=True, exist_ok=True)
+
+            # List remote directory
+            files = await self.list_dir(abs_remote)
+
+            for file_info in files:
+                local_file_path = target_dir / file_info.name
+
+                if file_info.is_dir:
+                    # Recursively download subdirectory
+                    sub_count = await self.download_directory(
+                        file_info.path,
+                        str(target_dir),
+                        progress_callback
+                    )
+                    files_downloaded += sub_count
+                else:
+                    # Download file
+                    def make_progress_handler(fname):
+                        def handler(done, total):
+                            if progress_callback:
+                                progress_callback(fname, done, total)
+                        return handler
+
+                    await self.download(
+                        file_info.path,
+                        str(local_file_path),
+                        make_progress_handler(file_info.name)
+                    )
+                    files_downloaded += 1
+
+            logger.info(f"Downloaded directory: {abs_remote} -> {target_dir} ({files_downloaded} files)")
+            return files_downloaded
+
+        except Exception as e:
+            logger.error(f"Directory download failed: {e}")
+            raise
+
+    async def upload_directory(
+        self,
+        local_path: str,
+        remote_path: str,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None
+    ) -> int:
+        """
+        Upload a directory recursively from local to remote.
+
+        Args:
+            local_path: Local directory path
+            remote_path: Remote destination path
+            progress_callback: Optional callback(filename, bytes_transferred, total_bytes)
+
+        Returns:
+            Number of files uploaded
+        """
+        if not self._sftp:
+            raise RuntimeError("SFTP not connected")
+
+        local_dir = Path(local_path)
+        if not local_dir.is_dir():
+            raise NotADirectoryError(f"Not a directory: {local_path}")
+
+        abs_remote = self._resolve_path(remote_path)
+        files_uploaded = 0
+
+        try:
+            # Create remote directory with same name
+            dir_name = local_dir.name
+            target_remote = str(PurePosixPath(abs_remote) / dir_name)
+
+            try:
+                await self.mkdir(target_remote)
+            except FileExistsError:
+                pass  # Directory already exists, continue
+
+            # Iterate local directory
+            for item in local_dir.iterdir():
+                remote_item_path = str(PurePosixPath(target_remote) / item.name)
+
+                if item.is_dir():
+                    # Recursively upload subdirectory
+                    sub_count = await self.upload_directory(
+                        str(item),
+                        target_remote,
+                        progress_callback
+                    )
+                    files_uploaded += sub_count
+                else:
+                    # Upload file
+                    def make_progress_handler(fname):
+                        def handler(done, total):
+                            if progress_callback:
+                                progress_callback(fname, done, total)
+                        return handler
+
+                    await self.upload(
+                        str(item),
+                        remote_item_path,
+                        make_progress_handler(item.name)
+                    )
+                    files_uploaded += 1
+
+            logger.info(f"Uploaded directory: {local_dir} -> {target_remote} ({files_uploaded} files)")
+            return files_uploaded
+
+        except Exception as e:
+            logger.error(f"Directory upload failed: {e}")
+            raise
+
     async def mkdir(self, path: str) -> str:
         """
         Create a directory.

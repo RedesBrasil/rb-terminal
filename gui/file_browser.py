@@ -1213,10 +1213,10 @@ class FileBrowser(QWidget):
         progress_callback: Optional[Callable[[str, int, int], None]] = None
     ) -> int:
         """
-        Upload files to remote directory.
+        Upload files and directories to remote directory.
 
         Args:
-            local_files: List of local file paths
+            local_files: List of local file/directory paths
             remote_dir: Remote directory path
             progress_callback: Optional callback(filename, bytes_done, total_bytes)
 
@@ -1230,15 +1230,30 @@ class FileBrowser(QWidget):
         for local_path in local_files:
             try:
                 local_file = Path(local_path)
-                remote_path = str(PurePosixPath(remote_dir) / local_file.name)
 
-                def progress(done, total):
-                    if progress_callback:
-                        progress_callback(local_file.name, done, total)
+                if local_file.is_dir():
+                    # Upload directory recursively
+                    self._set_status(f"Enviando pasta: {local_file.name}...")
+                    count = await self._sftp.upload_directory(
+                        local_path,
+                        remote_dir,
+                        progress_callback
+                    )
+                    uploaded += count
+                    self._set_status(f"Pasta enviada: {local_file.name} ({count} arquivos)")
+                else:
+                    # Upload single file
+                    remote_path = str(PurePosixPath(remote_dir) / local_file.name)
 
-                await self._sftp.upload(local_path, remote_path, progress)
-                uploaded += 1
-                self._set_status(f"Upload: {local_file.name}")
+                    def make_progress(name):
+                        def progress(done, total):
+                            if progress_callback:
+                                progress_callback(name, done, total)
+                        return progress
+
+                    await self._sftp.upload(local_path, remote_path, make_progress(local_file.name))
+                    uploaded += 1
+                    self._set_status(f"Upload: {local_file.name}")
 
             except Exception as e:
                 logger.error(f"Upload failed for {local_path}: {e}")
@@ -1259,7 +1274,7 @@ class FileBrowser(QWidget):
         progress_callback: Optional[Callable[[str, int, int], None]] = None
     ) -> int:
         """
-        Download files to local directory.
+        Download files and directories to local directory.
 
         Args:
             files: List of FileInfo to download
@@ -1274,19 +1289,30 @@ class FileBrowser(QWidget):
 
         downloaded = 0
         for file_info in files:
-            if file_info.is_dir:
-                continue  # Skip directories for now
-
             try:
-                local_path = os.path.join(local_dir, file_info.name)
+                if file_info.is_dir:
+                    # Download directory recursively
+                    self._set_status(f"Baixando pasta: {file_info.name}...")
+                    count = await self._sftp.download_directory(
+                        file_info.path,
+                        local_dir,
+                        progress_callback
+                    )
+                    downloaded += count
+                    self._set_status(f"Pasta baixada: {file_info.name} ({count} arquivos)")
+                else:
+                    # Download single file
+                    local_path = os.path.join(local_dir, file_info.name)
 
-                def progress(done, total):
-                    if progress_callback:
-                        progress_callback(file_info.name, done, total)
+                    def make_progress(name):
+                        def progress(done, total):
+                            if progress_callback:
+                                progress_callback(name, done, total)
+                        return progress
 
-                await self._sftp.download(file_info.path, local_path, progress)
-                downloaded += 1
-                self._set_status(f"Download: {file_info.name}")
+                    await self._sftp.download(file_info.path, local_path, make_progress(file_info.name))
+                    downloaded += 1
+                    self._set_status(f"Download: {file_info.name}")
 
             except Exception as e:
                 logger.error(f"Download failed for {file_info.path}: {e}")

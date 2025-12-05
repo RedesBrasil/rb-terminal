@@ -38,6 +38,25 @@ from core.resources import get_resource_path
 logger = logging.getLogger(__name__)
 
 
+def format_transfer_progress(name: str, done: int, total: int, action: str = "Baixando") -> str:
+    """Format transfer progress with KB/MB and percentage."""
+    if total <= 0:
+        return f"{action} {name}..."
+
+    # Calculate percentage
+    percent = (done / total) * 100
+
+    # Format size based on magnitude
+    if total < 1024 * 1024:  # Less than 1MB, show in KB
+        done_kb = done / 1024
+        total_kb = total / 1024
+        return f"{action} {name}: {done_kb:.1f}/{total_kb:.1f} KB ({percent:.0f}%)"
+    else:  # 1MB or more, show in MB
+        done_mb = done / (1024 * 1024)
+        total_mb = total / (1024 * 1024)
+        return f"{action} {name}: {done_mb:.2f}/{total_mb:.2f} MB ({percent:.0f}%)"
+
+
 class MainWindow(QMainWindow):
     """Main application window with hosts view, terminal tabs, and chat."""
 
@@ -1098,7 +1117,7 @@ class MainWindow(QMainWindow):
             files,
             dest_dir,
             progress_callback=lambda name, done, total: self._status_bar.showMessage(
-                f"Baixando {name}: {done}/{total} bytes"
+                format_transfer_progress(name, done, total, "Baixando")
             )
         )
         if downloaded > 0:
@@ -1115,7 +1134,7 @@ class MainWindow(QMainWindow):
             local_files,
             remote_dir,
             progress_callback=lambda name, done, total: self._status_bar.showMessage(
-                f"Enviando {name}: {done}/{total} bytes"
+                format_transfer_progress(name, done, total, "Enviando")
             )
         )
         if uploaded > 0:
