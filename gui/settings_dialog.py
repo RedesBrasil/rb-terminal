@@ -14,9 +14,10 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QGroupBox, QFormLayout, QMessageBox, QListWidget,
     QListWidgetItem, QApplication, QSpinBox, QComboBox, QFileDialog,
-    QFrame, QTabWidget, QWidget, QTextEdit, QTextBrowser
+    QFrame, QTabWidget, QWidget, QTextEdit, QTextBrowser, QCheckBox
 )
-from PySide6.QtCore import Qt, QThread, Signal, QEvent, QTimer
+from PySide6.QtCore import Qt, QThread, Signal, QEvent, QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 
 from core.data_manager import get_data_manager
 
@@ -102,6 +103,7 @@ Regras importantes:
         # Create tabs
         self._create_general_tab()
         self._create_ai_tab()
+        self._create_backup_tab()
 
         # Buttons
         buttons_layout = QHBoxLayout()
@@ -233,24 +235,6 @@ Regras importantes:
 
         layout.addWidget(storage_group)
 
-        # Backup Group
-        backup_group = QGroupBox("Backup")
-        backup_layout = QHBoxLayout(backup_group)
-
-        export_btn = QPushButton("Exportar Dados...")
-        export_btn.setToolTip("Exportar configuracoes e hosts para arquivo")
-        export_btn.clicked.connect(self._on_export)
-        backup_layout.addWidget(export_btn)
-
-        import_btn = QPushButton("Importar Dados...")
-        import_btn.setToolTip("Importar configuracoes e hosts de arquivo")
-        import_btn.clicked.connect(self._on_import)
-        backup_layout.addWidget(import_btn)
-
-        backup_layout.addStretch()
-
-        layout.addWidget(backup_group)
-
         # Winbox Group
         winbox_group = QGroupBox("Winbox (MikroTik)")
         winbox_layout = QFormLayout(winbox_group)
@@ -337,6 +321,97 @@ Regras importantes:
         layout.addStretch()
 
         self._tab_widget.addTab(tab, "IA")
+
+    def _create_backup_tab(self) -> None:
+        """Create the Backup settings tab."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setSpacing(12)
+
+        # Config File Group
+        config_group = QGroupBox("Arquivo de Configuracao")
+        config_layout = QHBoxLayout(config_group)
+
+        open_config_btn = QPushButton("Abrir data.json")
+        open_config_btn.setToolTip("Abre o arquivo de configuracao no editor padrao")
+        open_config_btn.clicked.connect(self._on_open_config_file)
+        config_layout.addWidget(open_config_btn)
+
+        config_layout.addStretch()
+
+        layout.addWidget(config_group)
+
+        # Export/Import Group
+        export_group = QGroupBox("Exportar / Importar")
+        export_layout = QHBoxLayout(export_group)
+
+        export_btn = QPushButton("Exportar Dados...")
+        export_btn.setToolTip("Exportar configuracoes e hosts para arquivo")
+        export_btn.clicked.connect(self._on_export)
+        export_layout.addWidget(export_btn)
+
+        import_btn = QPushButton("Importar Dados...")
+        import_btn.setToolTip("Importar configuracoes e hosts de arquivo")
+        import_btn.clicked.connect(self._on_import)
+        export_layout.addWidget(import_btn)
+
+        export_layout.addStretch()
+
+        layout.addWidget(export_group)
+
+        # Telegram Group
+        telegram_group = QGroupBox("Telegram")
+        telegram_layout = QFormLayout(telegram_group)
+
+        # Enable checkbox
+        self._telegram_enabled_check = QCheckBox("Ativar backup automatico")
+        self._telegram_enabled_check.setToolTip(
+            "Envia o arquivo data.json para o Telegram a cada alteracao"
+        )
+        telegram_layout.addRow("", self._telegram_enabled_check)
+
+        # Bot token
+        self._telegram_token_edit = QLineEdit()
+        self._telegram_token_edit.setPlaceholderText("1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ")
+        self._telegram_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+
+        token_row = QHBoxLayout()
+        self._toggle_token_btn = QPushButton("Mostrar")
+        self._toggle_token_btn.setFixedWidth(80)
+        self._toggle_token_btn.clicked.connect(self._toggle_telegram_token_visibility)
+        token_row.addWidget(self._telegram_token_edit)
+        token_row.addWidget(self._toggle_token_btn)
+        telegram_layout.addRow("Token do Bot:", token_row)
+
+        # Chat ID
+        self._telegram_chat_id_edit = QLineEdit()
+        self._telegram_chat_id_edit.setPlaceholderText("-1001234567890 ou 123456789")
+        self._telegram_chat_id_edit.setToolTip(
+            "ID do usuario ou grupo para enviar o backup.\n"
+            "Grupos geralmente comecam com -100"
+        )
+        telegram_layout.addRow("ID do Usuario/Grupo:", self._telegram_chat_id_edit)
+
+        # Test connection button
+        test_btn = QPushButton("Testar Conexao")
+        test_btn.setToolTip("Envia uma mensagem de teste para o Telegram")
+        test_btn.clicked.connect(self._on_test_telegram)
+        telegram_layout.addRow("", test_btn)
+
+        # Info label
+        info_label = QLabel(
+            "Para criar um bot, converse com @BotFather no Telegram.\n"
+            "Para obter seu ID, converse com @userinfobot."
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #888888; font-size: 11px; padding: 4px 0;")
+        telegram_layout.addRow("", info_label)
+
+        layout.addWidget(telegram_group)
+
+        layout.addStretch()
+
+        self._tab_widget.addTab(tab, "Backup")
 
     def _apply_dark_theme(self) -> None:
         """Apply dark theme to dialog."""
@@ -668,6 +743,11 @@ Regras importantes:
         else:
             self._prompt_edit.setPlainText(self.DEFAULT_SYSTEM_PROMPT)
 
+        # Telegram backup settings
+        self._telegram_enabled_check.setChecked(dm.is_telegram_backup_enabled())
+        self._telegram_token_edit.setText(dm.get_telegram_bot_token())
+        self._telegram_chat_id_edit.setText(dm.get_telegram_chat_id())
+
     def _toggle_api_key_visibility(self) -> None:
         """Toggle API key visibility."""
         if self._api_key_edit.echoMode() == QLineEdit.EchoMode.Password:
@@ -732,6 +812,13 @@ Regras importantes:
             dm.set_ai_system_prompt("")  # Use default
         else:
             dm.set_ai_system_prompt(prompt_text)
+
+        # Telegram backup settings
+        dm.set_telegram_config(
+            token=self._telegram_token_edit.text().strip(),
+            chat_id=self._telegram_chat_id_edit.text().strip(),
+            enabled=self._telegram_enabled_check.isChecked()
+        )
 
         dm.save()
 
@@ -909,6 +996,76 @@ Regras importantes:
 
         if file_path:
             self._winbox_path_edit.setText(file_path)
+
+    def _on_open_config_file(self) -> None:
+        """Open data.json in the default editor."""
+        data_path = self._data_manager.get_data_path()
+        if data_path.exists():
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(data_path)))
+        else:
+            QMessageBox.warning(
+                self,
+                "Arquivo nao encontrado",
+                f"O arquivo de configuracao nao foi encontrado:\n{data_path}"
+            )
+
+    def _toggle_telegram_token_visibility(self) -> None:
+        """Toggle Telegram token visibility."""
+        if self._telegram_token_edit.echoMode() == QLineEdit.EchoMode.Password:
+            self._telegram_token_edit.setEchoMode(QLineEdit.EchoMode.Normal)
+            self._toggle_token_btn.setText("Esconder")
+        else:
+            self._telegram_token_edit.setEchoMode(QLineEdit.EchoMode.Password)
+            self._toggle_token_btn.setText("Mostrar")
+
+    def _on_test_telegram(self) -> None:
+        """Send a test message to Telegram."""
+        token = self._telegram_token_edit.text().strip()
+        chat_id = self._telegram_chat_id_edit.text().strip()
+
+        if not token or not chat_id:
+            QMessageBox.warning(
+                self,
+                "Campos obrigatorios",
+                "Preencha o Token do Bot e o ID do Usuario/Grupo."
+            )
+            return
+
+        try:
+            url = f"https://api.telegram.org/bot{token}/sendMessage"
+            with httpx.Client(timeout=10.0) as client:
+                response = client.post(
+                    url,
+                    json={
+                        "chat_id": chat_id,
+                        "text": "✅ RB Terminal - Conexao de backup configurada com sucesso!"
+                    }
+                )
+                response.raise_for_status()
+
+            QMessageBox.information(
+                self,
+                "Sucesso",
+                "Mensagem de teste enviada com sucesso!\nVerifique seu Telegram."
+            )
+        except httpx.HTTPStatusError as e:
+            error_msg = "Erro desconhecido"
+            try:
+                error_data = e.response.json()
+                error_msg = error_data.get("description", str(e))
+            except Exception:
+                error_msg = str(e)
+            QMessageBox.critical(
+                self,
+                "Erro",
+                f"Falha ao enviar mensagem:\n{error_msg}"
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Erro",
+                f"Falha ao conectar:\n{str(e)}"
+            )
 
     def closeEvent(self, event) -> None:
         """Handle dialog close."""

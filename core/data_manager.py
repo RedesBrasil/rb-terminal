@@ -7,10 +7,13 @@ import json
 import base64
 import logging
 import uuid
+import asyncio
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
 from dataclasses import dataclass, field, asdict
+
+import httpx
 
 from core.crypto import CryptoManager, LegacyCryptoManager, get_config_dir
 
@@ -67,6 +70,10 @@ class Settings:
     list_column_widths: dict = field(default_factory=dict)
     # System prompt customizado para IA (vazio = usar default)
     ai_system_prompt: str = ""
+    # Telegram backup settings
+    telegram_bot_token: str = ""
+    telegram_chat_id: str = ""
+    telegram_backup_enabled: bool = False
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -93,6 +100,9 @@ class Settings:
             list_visible_fields=data.get("list_visible_fields", ["name", "host", "port", "username", "tags", "device_type", "manufacturer"]),
             list_column_widths=data.get("list_column_widths", {}),
             ai_system_prompt=data.get("ai_system_prompt", ""),
+            telegram_bot_token=data.get("telegram_bot_token", ""),
+            telegram_chat_id=data.get("telegram_chat_id", ""),
+            telegram_backup_enabled=data.get("telegram_backup_enabled", False),
         )
 
 
@@ -568,6 +578,8 @@ class DataManager:
         try:
             self._write_to_path(self._data_path)
             logger.debug("Data saved")
+            # Send backup to Telegram if enabled
+            self._send_telegram_backup()
 
         except Exception as e:
             logger.error(f"Failed to save data: {e}")
@@ -904,6 +916,66 @@ class DataManager:
         """Set custom AI system prompt."""
         self._settings.ai_system_prompt = prompt.strip()
         self._save()
+
+    # === Telegram backup settings ===
+
+    def get_telegram_bot_token(self) -> str:
+        """Get Telegram bot token."""
+        return self._settings.telegram_bot_token
+
+    def get_telegram_chat_id(self) -> str:
+        """Get Telegram chat ID."""
+        return self._settings.telegram_chat_id
+
+    def is_telegram_backup_enabled(self) -> bool:
+        """Check if Telegram backup is enabled."""
+        return self._settings.telegram_backup_enabled
+
+    def set_telegram_config(self, token: str, chat_id: str, enabled: bool) -> None:
+        """Set Telegram backup configuration."""
+        self._settings.telegram_bot_token = token.strip()
+        self._settings.telegram_chat_id = chat_id.strip()
+        self._settings.telegram_backup_enabled = enabled
+        self._save()
+
+    def _send_telegram_backup(self) -> None:
+        """Send data.json to Telegram (fire and forget)."""
+        if not self._settings.telegram_backup_enabled:
+            return
+        if not self._settings.telegram_bot_token or not self._settings.telegram_chat_id:
+            return
+        if not self._data_path or not self._data_path.exists():
+            return
+
+        async def send():
+            try:
+                token = self._settings.telegram_bot_token
+                chat_id = self._settings.telegram_chat_id
+                url = f"https://api.telegram.org/bot{token}/sendDocument"
+
+                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                caption = f"RB Terminal Backup - {timestamp}"
+
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    with open(self._data_path, "rb") as f:
+                        files = {"document": ("data.json", f, "application/json")}
+                        data = {"chat_id": chat_id, "caption": caption}
+                        response = await client.post(url, data=data, files=files)
+                        response.raise_for_status()
+                        logger.debug("Telegram backup sent successfully")
+            except Exception as e:
+                logger.error(f"Failed to send Telegram backup: {e}")
+
+        # Fire and forget - don't block the save
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.create_task(send())
+            else:
+                loop.run_until_complete(send())
+        except RuntimeError:
+            # No event loop running, create a new one
+            asyncio.run(send())
 
     # === Conversation accessors ===
 
