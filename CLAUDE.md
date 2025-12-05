@@ -33,8 +33,9 @@ rb-terminal/
 │   ├── terminal_widget.py      # Widget terminal com emulação ANSI
 │   ├── tab_session.py          # Dataclass TabSession (estado por aba)
 │   ├── chat_widget.py          # Widget chat IA
-│   ├── hosts_view.py           # Tela principal de hosts (cards/lista)
-│   ├── host_card.py            # Widgets de card e item de lista
+│   ├── hosts_view.py           # Tela principal de hosts (cards/lista/tabela)
+│   ├── host_card.py            # HostCard, HostListItem, HostsTableWidget
+│   ├── fields_config_dialog.py # Dialog para configurar campos visíveis
 │   ├── tags_widget.py          # Widget de tags com autocomplete
 │   ├── hosts_dialog.py         # Dialogs de hosts
 │   ├── settings_dialog.py      # Dialog de configurações
@@ -75,7 +76,10 @@ Salvos em `~/.rb-terminal/` (ou `%APPDATA%\.rb-terminal` no Windows):
     "hosts_view_mode": "cards",
     "hosts_sort_by": "name",
     "max_conversations_per_host": 10,
-    "winbox_path": "C:/path/to/winbox64.exe"
+    "winbox_path": "C:/path/to/winbox64.exe",
+    "card_visible_fields": ["name", "host", "tags", "device_type"],
+    "list_visible_fields": ["name", "host", "port", "username", "tags", "device_type", "manufacturer"],
+    "list_column_widths": {"host": 200, "port": 80}
   },
   "hosts": [
     {
@@ -163,3 +167,4 @@ Dialog de configurações com seções: API OpenRouter, Armazenamento (caminho c
 9. **Winbox:** Menu de contexto do host lança `winbox.exe <ip>:<porta> <user> <senha>`. Porta padrão 8291, configurável por host. Port knocking executado antes se configurado.
 10. **Acesso Web:** Menu de contexto abre navegador padrão com `http(s)://<ip>:<porta>`. Porta e HTTPS configuráveis por host em Opções Avançadas.
 11. **Múltiplos IPs:** Cada host pode ter múltiplos endereços (IP local, público, IPv6, domínio). Campo `hosts` é lista, `host` é propriedade de compatibilidade que retorna o primeiro. Ao conectar: fallback automático entre IPs. Menu de contexto mostra submenu com todos os IPs disponíveis para SSH, Winbox e Web.
+12. **Hosts View:** Modo cards (grid) ou lista (QTableWidget com QHeaderView nativo). Campos visíveis e ordem configuráveis via botão ☰. Colunas redimensionáveis com larguras persistidas. Ordenação por: name, host, port, username, device_type, manufacturer, os_version.
