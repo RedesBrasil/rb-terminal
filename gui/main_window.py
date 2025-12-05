@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QStatusBar, QSplitter, QMenu, QFrame, QToolBar, QSizePolicy,
     QLineEdit, QDialog, QTabWidget, QToolButton, QStackedWidget, QFileDialog
 )
-from PySide6.QtCore import Qt, Slot, Signal, QTimer, QSize
+from PySide6.QtCore import Qt, Slot, Signal, QTimer, QSize, QStandardPaths
 from PySide6.QtGui import QCloseEvent, QAction, QColor, QPainter, QPixmap, QIcon
 
 from core.ssh_session import SSHSession, SSHConfig
@@ -1073,16 +1073,17 @@ class MainWindow(QMainWindow):
     @Slot(list)
     def _on_sftp_download_requested(self, files) -> None:
         """Handle download request from SFTP browser."""
-        import os
-
         if not files:
             return
+
+        # Use Downloads folder as default
+        downloads_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
 
         # Ask for destination folder
         dest_dir = QFileDialog.getExistingDirectory(
             self,
             "Selecionar pasta de destino",
-            os.path.expanduser("~"),
+            downloads_dir,
             QFileDialog.Option.ShowDirsOnly
         )
 

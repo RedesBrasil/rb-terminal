@@ -6,9 +6,13 @@ Provides a file browser interface for remote file management.
 import asyncio
 import logging
 import os
+import subprocess
+import sys
 import tempfile
+import shutil
+from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Optional, List, Callable
+from typing import Optional, List, Callable, Dict
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QListWidget, QListWidgetItem,
@@ -17,11 +21,220 @@ from PySide6.QtWidgets import (
     QInputDialog, QAbstractItemView, QApplication, QProgressDialog
 )
 from PySide6.QtCore import Qt, Signal, Slot, QTimer, QSize, QMimeData, QUrl
+
 from PySide6.QtGui import QIcon, QDrag, QKeyEvent, QDragEnterEvent, QDropEvent
 
 from core.sftp_manager import SFTPManager, FileInfo
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class EditingFile:
+    """Represents a file being edited remotely."""
+    remote_path: str
+    local_path: str
+    last_modified: float  # timestamp of last known modification
+    uploading: bool = False
+
+
+class RemoteFileEditor:
+    """
+    Manages remote file editing.
+
+    Downloads files to temp, opens with default editor,
+    monitors for changes, and uploads back to server.
+    """
+
+    file_changed = None  # Will be set to Signal
+    file_uploaded = None  # Will be set to Signal
+
+    def __init__(self, sftp_manager: SFTPManager, status_callback: Callable[[str], None] = None):
+        self._sftp = sftp_manager
+        self._status_callback = status_callback
+        self._editing_files: Dict[str, EditingFile] = {}  # local_path -> EditingFile
+        self._temp_dir: Optional[Path] = None
+        self._watch_timer: Optional[QTimer] = None
+        self._check_interval = 1000  # Check every 1 second
+
+    def _ensure_temp_dir(self) -> Path:
+        """Ensure temp directory exists."""
+        if self._temp_dir is None or not self._temp_dir.exists():
+            self._temp_dir = Path(tempfile.mkdtemp(prefix="rb_terminal_edit_"))
+        return self._temp_dir
+
+    def _set_status(self, message: str) -> None:
+        """Set status message."""
+        if self._status_callback:
+            self._status_callback(message)
+        logger.info(message)
+
+    async def open_file(self, remote_path: str) -> bool:
+        """
+        Download and open a remote file for editing.
+
+        Args:
+            remote_path: Remote file path
+
+        Returns:
+            True if file was opened successfully
+        """
+        if not self._sftp or not self._sftp.is_connected:
+            self._set_status("SFTP não conectado")
+            return False
+
+        try:
+            # Create temp directory structure to preserve filename
+            temp_dir = self._ensure_temp_dir()
+            filename = PurePosixPath(remote_path).name
+            local_path = temp_dir / filename
+
+            # If file already being edited, just focus it
+            for ef in self._editing_files.values():
+                if ef.remote_path == remote_path:
+                    self._open_with_default_app(ef.local_path)
+                    self._set_status(f"Arquivo já aberto: {filename}")
+                    return True
+
+            # Download file
+            self._set_status(f"Baixando {filename}...")
+            await self._sftp.download(remote_path, str(local_path))
+
+            # Record the file
+            mtime = local_path.stat().st_mtime
+            editing_file = EditingFile(
+                remote_path=remote_path,
+                local_path=str(local_path),
+                last_modified=mtime
+            )
+            self._editing_files[str(local_path)] = editing_file
+
+            # Open with default application
+            self._open_with_default_app(str(local_path))
+            self._set_status(f"Editando: {filename}")
+
+            # Start watching for changes
+            self._start_watching()
+
+            return True
+
+        except Exception as e:
+            logger.error(f"Failed to open file for editing: {e}")
+            self._set_status(f"Erro ao abrir arquivo: {e}")
+            return False
+
+    def _open_with_default_app(self, local_path: str) -> None:
+        """Open file with the system's default application."""
+        try:
+            if sys.platform == "win32":
+                os.startfile(local_path)
+            elif sys.platform == "darwin":
+                subprocess.run(["open", local_path], check=True)
+            else:
+                subprocess.run(["xdg-open", local_path], check=True)
+        except Exception as e:
+            logger.error(f"Failed to open file with default app: {e}")
+            raise
+
+    def _start_watching(self) -> None:
+        """Start watching for file changes."""
+        if self._watch_timer is None:
+            self._watch_timer = QTimer()
+            self._watch_timer.timeout.connect(self._check_for_changes)
+
+        if not self._watch_timer.isActive():
+            self._watch_timer.start(self._check_interval)
+
+    def _stop_watching(self) -> None:
+        """Stop watching for file changes."""
+        if self._watch_timer and self._watch_timer.isActive():
+            self._watch_timer.stop()
+
+    def _check_for_changes(self) -> None:
+        """Check if any editing files have been modified."""
+        files_to_upload = []
+
+        for local_path, editing_file in list(self._editing_files.items()):
+            if editing_file.uploading:
+                continue
+
+            try:
+                path = Path(local_path)
+                if not path.exists():
+                    # File was deleted, remove from tracking
+                    del self._editing_files[local_path]
+                    continue
+
+                current_mtime = path.stat().st_mtime
+                if current_mtime > editing_file.last_modified:
+                    # File was modified, schedule upload
+                    files_to_upload.append(editing_file)
+                    editing_file.last_modified = current_mtime
+
+            except Exception as e:
+                logger.error(f"Error checking file {local_path}: {e}")
+
+        # Upload changed files
+        for editing_file in files_to_upload:
+            asyncio.ensure_future(self._upload_changes(editing_file))
+
+    async def _upload_changes(self, editing_file: EditingFile) -> None:
+        """Upload changes to the remote file."""
+        if editing_file.uploading:
+            return
+
+        editing_file.uploading = True
+        filename = Path(editing_file.local_path).name
+
+        try:
+            self._set_status(f"Salvando {filename}...")
+            await self._sftp.upload(editing_file.local_path, editing_file.remote_path)
+            self._set_status(f"Salvo: {filename}")
+
+            # Update mtime after successful upload
+            editing_file.last_modified = Path(editing_file.local_path).stat().st_mtime
+
+        except Exception as e:
+            logger.error(f"Failed to upload changes: {e}")
+            self._set_status(f"Erro ao salvar {filename}: {e}")
+        finally:
+            editing_file.uploading = False
+
+    def get_editing_count(self) -> int:
+        """Get number of files being edited."""
+        return len(self._editing_files)
+
+    def close_file(self, remote_path: str) -> None:
+        """Stop tracking a file for editing."""
+        to_remove = None
+        for local_path, ef in self._editing_files.items():
+            if ef.remote_path == remote_path:
+                to_remove = local_path
+                break
+
+        if to_remove:
+            del self._editing_files[to_remove]
+            # Try to delete the temp file
+            try:
+                Path(to_remove).unlink(missing_ok=True)
+            except Exception:
+                pass
+
+        if not self._editing_files:
+            self._stop_watching()
+
+    def close_all(self) -> None:
+        """Close all editing files and cleanup."""
+        self._stop_watching()
+        self._editing_files.clear()
+
+        # Cleanup temp directory
+        if self._temp_dir and self._temp_dir.exists():
+            try:
+                shutil.rmtree(self._temp_dir, ignore_errors=True)
+            except Exception:
+                pass
+            self._temp_dir = None
 
 
 # File type icons (using unicode symbols for simplicity)
@@ -117,9 +330,16 @@ class FileListWidget(QListWidget):
         """Get FileInfo for selected items."""
         selected = []
         for item in self.selectedItems():
-            index = self.row(item)
-            if 0 <= index < len(self._files):
-                selected.append(self._files[index])
+            # Get the path from UserRole data instead of using index
+            # This avoids off-by-one errors when ".." item is present
+            path = item.data(Qt.ItemDataRole.UserRole)
+            if path == "..":
+                continue
+            # Find file by path
+            for file_info in self._files:
+                if file_info.path == path:
+                    selected.append(file_info)
+                    break
         return selected
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
@@ -246,6 +466,7 @@ class FileBrowser(QWidget):
         self._follow_terminal = False
         self._loading = False
         self._show_hidden = True
+        self._remote_editor: Optional[RemoteFileEditor] = None
 
         self._setup_ui()
         self._apply_style()
@@ -502,6 +723,10 @@ class FileBrowser(QWidget):
             self._history = [self._current_path]
             self._history_index = 0
             self._set_status("Conectado")
+
+            # Create remote file editor
+            self._remote_editor = RemoteFileEditor(self._sftp, self._set_status)
+
             await self._load_directory(self._current_path)
         except Exception as e:
             logger.error(f"SFTP connect failed: {e}")
@@ -511,6 +736,11 @@ class FileBrowser(QWidget):
 
     async def disconnect(self) -> None:
         """Disconnect SFTP."""
+        # Close remote editor and cleanup temp files
+        if self._remote_editor:
+            self._remote_editor.close_all()
+            self._remote_editor = None
+
         if self._sftp:
             await self._sftp.disconnect()
             self._sftp = None
@@ -682,8 +912,14 @@ class FileBrowser(QWidget):
                 if file_info.is_dir:
                     asyncio.ensure_future(self._load_directory(path))
                 else:
-                    self.file_double_clicked.emit(path)
+                    # Open file for remote editing
+                    self._open_file_for_editing(path)
                 return
+
+    def _open_file_for_editing(self, remote_path: str) -> None:
+        """Open a file for remote editing."""
+        if self._remote_editor:
+            asyncio.ensure_future(self._remote_editor.open_file(remote_path))
 
     def _on_follow_changed(self, state: int) -> None:
         """Handle follow terminal checkbox change."""
@@ -810,6 +1046,11 @@ class FileBrowser(QWidget):
         """)
 
         if item and item.data(Qt.ItemDataRole.UserRole) != "..":
+            # Edit action (single file only, not directory)
+            if len(selected) == 1 and not selected[0].is_dir:
+                edit_action = menu.addAction("Editar")
+                edit_action.triggered.connect(lambda: self._open_file_for_editing(selected[0].path))
+
             # Download action
             download_action = menu.addAction("Download")
             download_action.triggered.connect(lambda: self._context_download(selected))
