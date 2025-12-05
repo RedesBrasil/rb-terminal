@@ -50,6 +50,7 @@ class Settings:
     theme: str = "dark"
     max_agent_iterations: int = 10
     chat_position: str = "bottom"
+    sftp_position: str = "left"  # Posição do file browser: left, right, bottom
     available_tags: list = field(default_factory=list)
     hosts_view_mode: str = "cards"
     hosts_sort_by: str = "name"
@@ -78,6 +79,7 @@ class Settings:
             theme=data.get("theme", "dark"),
             max_agent_iterations=int(data.get("max_agent_iterations", 10) or 10),
             chat_position=data.get("chat_position", "bottom") or "bottom",
+            sftp_position=data.get("sftp_position", "left") or "left",
             available_tags=data.get("available_tags", []),
             hosts_view_mode=data.get("hosts_view_mode", "cards") or "cards",
             hosts_sort_by=data.get("hosts_sort_by", "name") or "name",
@@ -730,6 +732,15 @@ class DataManager:
     def set_chat_position(self, position: str) -> None:
         if position in {"bottom", "left", "right"}:
             self._settings.chat_position = position
+            self._save()
+
+    def get_sftp_position(self) -> str:
+        pos = self._settings.sftp_position
+        return pos if pos in {"bottom", "left", "right"} else "left"
+
+    def set_sftp_position(self, position: str) -> None:
+        if position in {"bottom", "left", "right"}:
+            self._settings.sftp_position = position
             self._save()
 
     def get_tags(self) -> List[str]:

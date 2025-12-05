@@ -549,3 +549,17 @@ class SSHSession:
             return output
         except asyncio.TimeoutError:
             raise TimeoutError(f"Command timed out after {timeout}s")
+
+    async def get_sftp_client(self) -> asyncssh.SFTPClient:
+        """
+        Get SFTP client from existing SSH connection.
+
+        Returns:
+            asyncssh.SFTPClient instance
+
+        Raises:
+            RuntimeError: If not connected
+        """
+        if not self._conn or not self.is_connected:
+            raise RuntimeError("SSH not connected")
+        return await self._conn.start_sftp_client()

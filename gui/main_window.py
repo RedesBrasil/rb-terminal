@@ -15,7 +15,7 @@ import asyncssh
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QMessageBox, QStatusBar, QSplitter, QMenu, QFrame, QToolBar, QSizePolicy,
-    QLineEdit, QDialog, QTabWidget, QToolButton, QStackedWidget
+    QLineEdit, QDialog, QTabWidget, QToolButton, QStackedWidget, QFileDialog
 )
 from PySide6.QtCore import Qt, Slot, Signal, QTimer, QSize
 from PySide6.QtGui import QCloseEvent, QAction, QColor, QPainter, QPixmap, QIcon
@@ -25,6 +25,7 @@ from core.agent import create_agent, SSHAgent, UsageStats
 from core.data_manager import get_data_manager, DataManager, ChatMessage
 from gui.terminal_widget import TerminalWidget
 from gui.chat_widget import ChatWidget
+from gui.file_browser import FileBrowser
 from gui.hosts_dialog import HostDialog, PasswordPromptDialog, QuickConnectDialog
 from gui.settings_dialog import SettingsDialog
 from gui.tab_session import TabSession
@@ -59,6 +60,7 @@ class MainWindow(QMainWindow):
 
         self._resize_timer: Optional[QTimer] = None
         self._chat_visible: bool = False  # Chat starts hidden
+        self._sftp_visible: bool = False  # SFTP browser starts hidden
 
         # Initialize data manager and handle setup/unlock
         self._data_manager = get_data_manager()
@@ -68,10 +70,16 @@ class MainWindow(QMainWindow):
             sys.exit(0)
 
         self._chat_position = self._data_manager.get_chat_position()
+        self._sftp_position = self._data_manager.get_sftp_position()
         self._splitter_sizes = {
             "bottom": [700, 300],
             "left": [300, 700],
             "right": [700, 300],
+        }
+        self._sftp_splitter_sizes = {
+            "bottom": [700, 250],
+            "left": [250, 700],
+            "right": [700, 250],
         }
         self._applying_splitter_sizes = False
 
@@ -244,7 +252,13 @@ class MainWindow(QMainWindow):
         self._update_chat_panel_style()
         self._setup_chat_panel()
 
+        # SFTP panel (position determined by settings)
+        self._sftp_panel = QFrame()
+        self._update_sftp_panel_style()
+        self._setup_sftp_panel()
+
         self._terminal_chat_splitter: Optional[QSplitter] = None
+        self._sftp_splitter: Optional[QSplitter] = None
         self._rebuild_terminal_chat_splitter()
 
         self._stacked_widget.addWidget(self._terminal_area)
@@ -266,6 +280,33 @@ class MainWindow(QMainWindow):
         # Chat widget
         self._chat = ChatWidget()
         layout.addWidget(self._chat)
+
+    def _setup_sftp_panel(self) -> None:
+        """Setup the SFTP file browser panel content."""
+        layout = QVBoxLayout(self._sftp_panel)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        # File browser widget
+        self._sftp_browser = FileBrowser()
+        self._sftp_browser.download_requested.connect(self._on_sftp_download_requested)
+        self._sftp_browser.upload_requested.connect(self._on_sftp_upload_requested)
+        self._sftp_browser.status_message.connect(self._on_sftp_status)
+        layout.addWidget(self._sftp_browser)
+
+    def _update_sftp_panel_style(self) -> None:
+        """Update SFTP panel border based on position."""
+        if not hasattr(self, "_sftp_panel") or self._sftp_panel is None:
+            return
+
+        if self._sftp_position == "bottom":
+            border = "border-top: 1px solid #3c3c3c;"
+        elif self._sftp_position == "left":
+            border = "border-right: 1px solid #3c3c3c;"
+        else:  # right
+            border = "border-left: 1px solid #3c3c3c;"
+
+        self._sftp_panel.setStyleSheet(f"background-color: #252526; {border}")
 
     def _update_chat_panel_style(self) -> None:
         """Update chat panel border based on position."""
@@ -305,8 +346,40 @@ class MainWindow(QMainWindow):
         splitter.setHandleWidth(5)
         return splitter
 
+    def _create_main_splitter_with_sftp(self, inner_widget: QWidget) -> QSplitter:
+        """Create main splitter that includes SFTP panel."""
+        if self._sftp_position == "bottom":
+            splitter = QSplitter(Qt.Orientation.Vertical)
+            splitter.addWidget(inner_widget)
+            splitter.addWidget(self._sftp_panel)
+            splitter.setStretchFactor(0, 1)
+            splitter.setStretchFactor(1, 0)
+        elif self._sftp_position == "left":
+            splitter = QSplitter(Qt.Orientation.Horizontal)
+            splitter.addWidget(self._sftp_panel)
+            splitter.addWidget(inner_widget)
+            splitter.setStretchFactor(0, 0)
+            splitter.setStretchFactor(1, 1)
+        else:  # right
+            splitter = QSplitter(Qt.Orientation.Horizontal)
+            splitter.addWidget(inner_widget)
+            splitter.addWidget(self._sftp_panel)
+            splitter.setStretchFactor(0, 1)
+            splitter.setStretchFactor(1, 0)
+        splitter.setChildrenCollapsible(False)
+        splitter.setHandleWidth(5)
+        return splitter
+
     def _rebuild_terminal_chat_splitter(self) -> None:
-        """Rebuild splitter when chat layout or orientation changes."""
+        """Rebuild splitters when layout or orientation changes."""
+        # Disconnect and remove existing splitters
+        if hasattr(self, "_sftp_splitter") and self._sftp_splitter:
+            try:
+                self._sftp_splitter.splitterMoved.disconnect(self._on_sftp_splitter_moved)
+            except (TypeError, RuntimeError):
+                pass
+            self._sftp_splitter.setParent(None)
+
         if hasattr(self, "_terminal_chat_splitter") and self._terminal_chat_splitter:
             try:
                 self._terminal_chat_splitter.splitterMoved.disconnect(self._on_splitter_moved)
@@ -314,11 +387,17 @@ class MainWindow(QMainWindow):
                 pass
             self._terminal_chat_splitter.setParent(None)
 
-        splitter = self._create_terminal_chat_splitter()
-        self._terminal_chat_splitter = splitter
-        self._content_layout.addWidget(splitter, 1)
-        splitter.splitterMoved.connect(self._on_splitter_moved)
+        # Create terminal+chat splitter
+        self._terminal_chat_splitter = self._create_terminal_chat_splitter()
+        self._terminal_chat_splitter.splitterMoved.connect(self._on_splitter_moved)
+
+        # Create main splitter with SFTP
+        self._sftp_splitter = self._create_main_splitter_with_sftp(self._terminal_chat_splitter)
+        self._sftp_splitter.splitterMoved.connect(self._on_sftp_splitter_moved)
+
+        self._content_layout.addWidget(self._sftp_splitter, 1)
         self._apply_chat_visibility()
+        self._apply_sftp_visibility()
 
     def _apply_chat_visibility(self) -> None:
         """Adjust splitter sizes based on chat visibility."""
@@ -363,12 +442,66 @@ class MainWindow(QMainWindow):
         if self._terminal_chat_splitter:
             self._splitter_sizes[self._chat_position] = self._terminal_chat_splitter.sizes()
 
+    def _apply_sftp_visibility(self) -> None:
+        """Adjust splitter sizes based on SFTP panel visibility."""
+        if not self._sftp_splitter:
+            return
+
+        # Hide or show panel widget
+        if hasattr(self, "_sftp_panel") and self._sftp_panel:
+            self._sftp_panel.setVisible(self._sftp_visible)
+
+        if not self._sftp_visible:
+            hide_sizes = [1, 0] if self._sftp_position != "left" else [0, 1]
+            self._applying_splitter_sizes = True
+            self._sftp_splitter.setSizes(hide_sizes)
+            self._applying_splitter_sizes = False
+        else:
+            sizes = self._sftp_splitter_sizes.get(self._sftp_position)
+            if not sizes:
+                sizes = self._get_default_sftp_splitter_sizes(self._sftp_position)
+            self._applying_splitter_sizes = True
+            self._sftp_splitter.setSizes(sizes)
+            self._applying_splitter_sizes = False
+
+        # Sync toolbar toggle state without re-triggering signals
+        if hasattr(self, "_toggle_sftp_btn"):
+            blocked = self._toggle_sftp_btn.blockSignals(True)
+            self._toggle_sftp_btn.setChecked(self._sftp_visible)
+            self._toggle_sftp_btn.blockSignals(blocked)
+
+    def _get_default_sftp_splitter_sizes(self, position: str) -> list[int]:
+        """Default splitter sizes for SFTP panel."""
+        if position == "bottom":
+            return [700, 250]
+        if position == "left":
+            return [250, 700]
+        return [700, 250]
+
+    def _on_sftp_splitter_moved(self, pos: int, index: int) -> None:
+        """Store SFTP splitter sizes when user manually adjusts layout."""
+        if self._applying_splitter_sizes or not self._sftp_visible:
+            return
+        if self._sftp_splitter:
+            self._sftp_splitter_sizes[self._sftp_position] = self._sftp_splitter.sizes()
+
     def _apply_settings_changes(self) -> None:
         """Apply settings that might impact layout."""
-        new_position = self._data_manager.get_chat_position()
-        if new_position != self._chat_position:
-            self._chat_position = new_position
+        rebuild_needed = False
+
+        new_chat_position = self._data_manager.get_chat_position()
+        if new_chat_position != self._chat_position:
+            self._chat_position = new_chat_position
             self._update_chat_panel_style()
+            rebuild_needed = True
+
+        new_sftp_position = self._data_manager.get_sftp_position()
+        if new_sftp_position != self._sftp_position:
+            self._sftp_position = new_sftp_position
+            self._update_sftp_panel_style()
+            rebuild_needed = True
+
+        if rebuild_needed:
             self._rebuild_terminal_chat_splitter()
 
     def _create_toolbar(self) -> QToolBar:
@@ -420,6 +553,15 @@ class MainWindow(QMainWindow):
         self._toggle_chat_btn.setShortcut("Ctrl+I")
         self._toggle_chat_btn.triggered.connect(self._on_toggle_chat)
         toolbar.addAction(self._toggle_chat_btn)
+
+        # Toggle SFTP button (starts unchecked/hidden)
+        self._toggle_sftp_btn = QAction("Arquivos", self)
+        self._toggle_sftp_btn.setCheckable(True)
+        self._toggle_sftp_btn.setChecked(False)
+        self._toggle_sftp_btn.setToolTip("Mostrar/Esconder navegador de arquivos (Ctrl+E)")
+        self._toggle_sftp_btn.setShortcut("Ctrl+E")
+        self._toggle_sftp_btn.triggered.connect(self._on_toggle_sftp)
+        toolbar.addAction(self._toggle_sftp_btn)
 
         # Terminal button - return to terminal view (only visible when sessions exist)
         self._terminal_btn = QAction("Terminal", self)
@@ -786,6 +928,14 @@ class MainWindow(QMainWindow):
             if session.terminal:
                 session.terminal.set_focus()
 
+            # Update SFTP browser if visible
+            if self._sftp_visible:
+                if session.is_connected and session.ssh_session:
+                    asyncio.ensure_future(self._connect_sftp_for_session(session))
+                else:
+                    asyncio.ensure_future(self._sftp_browser.disconnect())
+                    self._sftp_browser.clear()
+
     @Slot()
     def _on_next_tab(self) -> None:
         """Switch to next tab (Ctrl+Right)."""
@@ -816,6 +966,10 @@ class MainWindow(QMainWindow):
 
         if session.ssh_session.is_connected:
             asyncio.ensure_future(session.ssh_session.send_input(data))
+
+            # Trigger SFTP sync when user presses Enter (command executed)
+            if "\r" in data or "\n" in data:
+                self._trigger_sftp_follow_sync()
 
     def _on_reconnect_for_session(self, session: TabSession) -> None:
         """Handle reconnect request for a specific session."""
@@ -884,6 +1038,127 @@ class MainWindow(QMainWindow):
         """Toggle chat panel visibility."""
         self._chat_visible = not self._chat_visible
         self._apply_chat_visibility()
+
+    @Slot()
+    def _on_toggle_sftp(self) -> None:
+        """Toggle SFTP panel visibility."""
+        self._sftp_visible = not self._sftp_visible
+        self._apply_sftp_visibility()
+
+        # Connect SFTP if showing and session is connected
+        if self._sftp_visible:
+            session = self._get_active_session()
+            if session and session.is_connected and session.ssh_session:
+                asyncio.ensure_future(self._connect_sftp_for_session(session))
+
+    async def _connect_sftp_for_session(self, session: TabSession) -> None:
+        """Connect SFTP browser to the session's SSH connection."""
+        if not session.ssh_session or not session.ssh_session.is_connected:
+            return
+
+        try:
+            # Get the underlying SSH connection
+            ssh_conn = session.ssh_session._conn
+            if ssh_conn:
+                await self._sftp_browser.connect(ssh_conn)
+                logger.info("SFTP connected for session")
+
+                # Sync with terminal cwd if follow mode is enabled
+                if self._sftp_browser.follow_terminal:
+                    await self._sync_sftp_with_terminal_cwd()
+        except Exception as e:
+            logger.error(f"Failed to connect SFTP: {e}")
+            self._status_bar.showMessage(f"Erro SFTP: {e}", 5000)
+
+    @Slot(list)
+    def _on_sftp_download_requested(self, files) -> None:
+        """Handle download request from SFTP browser."""
+        import os
+
+        if not files:
+            return
+
+        # Ask for destination folder
+        dest_dir = QFileDialog.getExistingDirectory(
+            self,
+            "Selecionar pasta de destino",
+            os.path.expanduser("~"),
+            QFileDialog.Option.ShowDirsOnly
+        )
+
+        if not dest_dir:
+            return
+
+        asyncio.ensure_future(self._download_files_async(files, dest_dir))
+
+    async def _download_files_async(self, files, dest_dir: str) -> None:
+        """Download files to local directory."""
+        downloaded = await self._sftp_browser.download_files(
+            files,
+            dest_dir,
+            progress_callback=lambda name, done, total: self._status_bar.showMessage(
+                f"Baixando {name}: {done}/{total} bytes"
+            )
+        )
+        if downloaded > 0:
+            self._status_bar.showMessage(f"{downloaded} arquivo(s) baixado(s)", 3000)
+
+    @Slot(list, str)
+    def _on_sftp_upload_requested(self, local_files: list, remote_dir: str) -> None:
+        """Handle upload request from SFTP browser."""
+        asyncio.ensure_future(self._upload_files_async(local_files, remote_dir))
+
+    async def _upload_files_async(self, local_files: list, remote_dir: str) -> None:
+        """Upload files to remote directory."""
+        uploaded = await self._sftp_browser.upload_files(
+            local_files,
+            remote_dir,
+            progress_callback=lambda name, done, total: self._status_bar.showMessage(
+                f"Enviando {name}: {done}/{total} bytes"
+            )
+        )
+        if uploaded > 0:
+            self._status_bar.showMessage(f"{uploaded} arquivo(s) enviado(s)", 3000)
+
+    @Slot(str)
+    def _on_sftp_status(self, message: str) -> None:
+        """Handle status message from SFTP browser."""
+        self._status_bar.showMessage(message, 3000)
+
+    async def _sync_sftp_with_terminal_cwd(self) -> None:
+        """Sync SFTP browser with terminal's current working directory."""
+        # Check if follow mode is enabled
+        if not self._sftp_visible or not self._sftp_browser.follow_terminal:
+            return
+
+        # Check if we have an active connected session
+        session = self._get_active_session()
+        if not session or not session.is_connected or not session.ssh_session:
+            return
+
+        try:
+            # Get current working directory from terminal
+            cwd = await session.ssh_session.execute_command("pwd", timeout=5.0)
+            cwd = cwd.strip()
+
+            if cwd and cwd.startswith("/"):
+                # Update file browser if path changed
+                if cwd != self._sftp_browser.current_path:
+                    self._sftp_browser.set_path(cwd)
+        except Exception as e:
+            logger.debug(f"Could not get terminal cwd: {e}")
+
+    def _trigger_sftp_follow_sync(self) -> None:
+        """Trigger SFTP sync after a short delay (debounced)."""
+        if not hasattr(self, "_sftp_sync_timer"):
+            self._sftp_sync_timer = QTimer()
+            self._sftp_sync_timer.setSingleShot(True)
+            self._sftp_sync_timer.timeout.connect(
+                lambda: asyncio.ensure_future(self._sync_sftp_with_terminal_cwd())
+            )
+
+        # Debounce: wait 500ms after last input before syncing
+        self._sftp_sync_timer.start(500)
 
     @Slot()
     def _on_config_clicked(self) -> None:
@@ -1448,6 +1723,12 @@ class MainWindow(QMainWindow):
         # Update tab status
         self._update_tab_status(session)
 
+        # Clear SFTP browser if this is the active session
+        active_session = self._get_active_session()
+        if active_session and active_session.id == tab_id:
+            asyncio.ensure_future(self._sftp_browser.disconnect())
+            self._sftp_browser.clear()
+
         # Show disconnected message in terminal
         if session.terminal:
             session.terminal.show_disconnected_message()
@@ -1470,6 +1751,12 @@ class MainWindow(QMainWindow):
         if session.ssh_session:
             await session.ssh_session.disconnect()
             session.ssh_session = None
+
+        # Clear SFTP browser if this is the active session
+        active_session = self._get_active_session()
+        if active_session and active_session.id == session.id:
+            await self._sftp_browser.disconnect()
+            self._sftp_browser.clear()
 
         session.connection_status = "disconnected"
         self._update_tab_status(session)

@@ -50,6 +50,10 @@ class TabSession:
     # Fallback hosts for connection retry
     fallback_hosts: List[str] = field(default_factory=list)
     current_host_index: int = 0
+    # SFTP state
+    sftp_current_path: str = "~"
+    sftp_history: List[str] = field(default_factory=list)
+    sftp_history_index: int = -1
 
     @property
     def is_connected(self) -> bool:

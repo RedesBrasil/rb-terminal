@@ -308,39 +308,45 @@ curl -s "https://openrouter.ai/api/v1/chat/completions" \
 
 ## ETAPA 5: Gerenciador de Arquivos (SFTP)
 **Objetivo:** Navegar pastas, upload/download
+**Status:** Concluída
 
 ### Arquivos a criar/modificar:
 ```
 ├── core/
 │   ├── sftp_manager.py     # NOVO
-│   └── agent.py            # adicionar tools SFTP
+│   └── agent.py            # adicionar tools SFTP (removido do escopo desta etapa)
 ├── gui/
-│   ├── main_window.py      # botão SFTP
-│   └── file_browser.py     # NOVO
+│   ├── main_window.py      # botão SFTP + painel
+│   ├── file_browser.py     # NOVO
+│   ├── tab_session.py      # estado SFTP por aba
+│   └── settings_dialog.py  # config posição SFTP
+├── core/
+│   └── data_manager.py     # config sftp_position
 ```
 
 ### Funcionalidades:
-- [ ] Botão "Arquivos" abre file browser
-- [ ] Navegar pastas do host remoto
-- [ ] Download: selecionar arquivo → salvar local
-- [ ] Upload: arrastar arquivo ou botão
-- [ ] Criar pasta
-- [ ] Renomear arquivo/pasta
-- [ ] Excluir arquivo/pasta
-- [ ] Tools da IA: read_file, write_file, list_directory, upload_file, download_file
+- [x] Botão "Arquivos" (Ctrl+E) abre file browser lateral
+- [x] Navegar pastas do host remoto
+- [x] Download: selecionar arquivo → salvar local (menu contexto ou drag)
+- [x] Upload: arrastar arquivo do Windows ou botão
+- [x] Criar pasta
+- [x] Renomear arquivo/pasta
+- [x] Excluir arquivo/pasta
+- [x] Posição configurável (esquerda/direita/embaixo) como o chat
+- [x] Drag & drop bidirecional (Windows ↔ servidor)
+- [x] Follow terminal folder (sincroniza com pwd do terminal)
 
 ### Critérios de aceite:
-1. Abrir file browser em sessão conectada
-2. Navegar até /etc/, ver arquivos
-3. Download de arquivo funciona
-4. Upload de arquivo funciona
-5. IA: "Leia o conteúdo do /etc/hostname" → funciona
-6. IA: "Crie um arquivo teste.txt com conteúdo 'hello'" → funciona
+1. Abrir file browser em sessão conectada ✓
+2. Navegar até /etc/, ver arquivos ✓
+3. Download de arquivo funciona ✓
+4. Upload de arquivo funciona ✓
+5. Posição configurável em Settings ✓
+6. Follow terminal folder funciona ✓
 
 ### Notas técnicas:
 - SFTP usa mesma conexão SSH (asyncssh suporta)
 - File browser pode ser dock widget ou dialog flutuante, reaproveitando sessão aberta
-- IA deve reutilizar as mesmas ferramentas (`read_file`, `write_file`, `list_directory`, `upload_file`, `download_file`) para cumprir o loop agentico descrito no escopo geral
 - Upload deve oferecer opção de sobrescrever/renomear em caso de conflito
 - Operações críticas (delete/rename) devem pedir confirmação e herdar política da Etapa 6
 

@@ -79,7 +79,8 @@ Salvos em `~/.rb-terminal/` (ou `%APPDATA%\.rb-terminal` no Windows):
     "winbox_path": "C:/path/to/winbox64.exe",
     "card_visible_fields": ["name", "host", "tags", "device_type"],
     "list_visible_fields": ["name", "host", "port", "username", "tags", "device_type", "manufacturer"],
-    "list_column_widths": {"host": 200, "port": 80}
+    "list_column_widths": {"host": 200, "port": 80},
+    "ai_system_prompt": ""
   },
   "hosts": [
     {
@@ -108,7 +109,10 @@ Salvos em `~/.rb-terminal/` (ou `%APPDATA%\.rb-terminal` no Windows):
       "messages": [
         {"role": "user", "content": "...", "timestamp": "..."},
         {"role": "assistant", "content": "...", "timestamp": "..."}
-      ]
+      ],
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "total_cost": 0.0
     }
   ]
 }
@@ -132,7 +136,12 @@ Singleton `get_data_manager()` que unifica hosts e settings. Gerencia:
 
 ### core/agent.py
 
-Agente IA que executa comandos SSH via OpenRouter API. Recebe função `execute_command` async, callbacks para status e contexto de `device_type`. Fluxo agêntico: Mensagem → IA decide tool call → Executa SSH → IA analisa output → Loop até resposta final.
+Agente IA que executa comandos SSH via OpenRouter API. Fluxo agêntico: Mensagem → IA decide tool call → Executa SSH → IA analisa output → Loop até resposta final.
+
+- `SSHAgent`: Classe principal. `DEFAULT_SYSTEM_PROMPT` é o prompt base, `TOOL_INSTRUCTION` é injetado automaticamente no final.
+- `UsageStats`: Dataclass para tracking de tokens e custo (`prompt_tokens`, `completion_tokens`, `total_cost`).
+- `_get_system_prompt()`: Monta prompt = (custom ou default) + dados do host + instrução da ferramenta.
+- System prompt customizável via `ai_system_prompt` em settings (vazio = usar default).
 
 ### core/ssh_session.py
 
@@ -152,7 +161,9 @@ Dialog para desbloquear quando há senha mestra mas sem sessão cacheada (novo c
 
 ### gui/settings_dialog.py
 
-Dialog de configurações com seções: API OpenRouter, Armazenamento (caminho customizado, segurança), Backup (export/import), Winbox (caminho do executável).
+Dialog de configurações com QTabWidget:
+- **Aba Geral:** API OpenRouter (key, modelo, iterações, posição chat), Armazenamento, Backup, Winbox.
+- **Aba IA:** System prompt editável com preview. Dados do host e `TOOL_INSTRUCTION` são injetados automaticamente (não editáveis).
 
 ## Notas Técnicas
 
@@ -168,3 +179,5 @@ Dialog de configurações com seções: API OpenRouter, Armazenamento (caminho c
 10. **Acesso Web:** Menu de contexto abre navegador padrão com `http(s)://<ip>:<porta>`. Porta e HTTPS configuráveis por host em Opções Avançadas.
 11. **Múltiplos IPs:** Cada host pode ter múltiplos endereços (IP local, público, IPv6, domínio). Campo `hosts` é lista, `host` é propriedade de compatibilidade que retorna o primeiro. Ao conectar: fallback automático entre IPs. Menu de contexto mostra submenu com todos os IPs disponíveis para SSH, Winbox e Web.
 12. **Hosts View:** Modo cards (grid) ou lista (QTableWidget com QHeaderView nativo). Campos visíveis e ordem configuráveis via botão ☰. Colunas redimensionáveis com larguras persistidas. Ordenação por: name, host, port, username, device_type, manufacturer, os_version.
+13. **System Prompt IA:** Estrutura: `[prompt editável] + [dados do host] + [TOOL_INSTRUCTION]`. O usuário edita só a primeira parte. Dados do host (nome, IP, tipo, fabricante, tags, notes) e instrução da ferramenta são injetados automaticamente em `_get_system_prompt()`.
+14. **Usage Tracking:** `UsageStats` em agent.py rastreia tokens e custo. Custo real é buscado via `/generation?id=` após cada chamada. Estatísticas salvas por conversa em `data.json`.

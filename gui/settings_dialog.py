@@ -181,6 +181,14 @@ Regras importantes:
         self._chat_position_combo.setToolTip("Posicao do painel de chat em relacao ao terminal")
         api_layout.addRow("Posicao do Chat:", self._chat_position_combo)
 
+        # SFTP position
+        self._sftp_position_combo = QComboBox()
+        self._sftp_position_combo.addItem("A esquerda do terminal", "left")
+        self._sftp_position_combo.addItem("A direita do terminal", "right")
+        self._sftp_position_combo.addItem("Abaixo do terminal", "bottom")
+        self._sftp_position_combo.setToolTip("Posicao do navegador de arquivos em relacao ao terminal")
+        api_layout.addRow("Posicao do SFTP:", self._sftp_position_combo)
+
         # Max conversations per host
         self._max_conversations_spin = QSpinBox()
         self._max_conversations_spin.setRange(1, 100)
@@ -627,6 +635,12 @@ Regras importantes:
         else:
             self._chat_position_combo.setCurrentIndex(0)
 
+        # SFTP position
+        sftp_position = dm.get_sftp_position()
+        index = self._sftp_position_combo.findData(sftp_position)
+        if index >= 0:
+            self._sftp_position_combo.setCurrentIndex(index)
+
         # Max conversations per host
         self._max_conversations_spin.setValue(dm.get_max_conversations_per_host())
 
@@ -706,6 +720,9 @@ Regras importantes:
         chat_position = self._chat_position_combo.currentData()
         if chat_position:
             dm.set_chat_position(chat_position)
+        sftp_position = self._sftp_position_combo.currentData()
+        if sftp_position:
+            dm.set_sftp_position(sftp_position)
         dm.set_max_conversations_per_host(self._max_conversations_spin.value())
         dm.settings.winbox_path = self._winbox_path_edit.text()
 
