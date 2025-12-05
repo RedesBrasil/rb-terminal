@@ -292,6 +292,7 @@ class MainWindow(QMainWindow):
         self._sftp_browser.download_requested.connect(self._on_sftp_download_requested)
         self._sftp_browser.upload_requested.connect(self._on_sftp_upload_requested)
         self._sftp_browser.status_message.connect(self._on_sftp_status)
+        self._sftp_browser.directory_changed.connect(self._on_sftp_directory_changed)
         layout.addWidget(self._sftp_browser)
 
     def _update_sftp_panel_style(self) -> None:
@@ -967,9 +968,8 @@ class MainWindow(QMainWindow):
         if session.ssh_session.is_connected:
             asyncio.ensure_future(session.ssh_session.send_input(data))
 
-            # Trigger SFTP sync when user presses Enter (command executed)
-            if "\r" in data or "\n" in data:
-                self._trigger_sftp_follow_sync()
+            # Track input for cd command detection
+            self._track_terminal_input(session, data)
 
     def _on_reconnect_for_session(self, session: TabSession) -> None:
         """Handle reconnect request for a specific session."""
@@ -1124,22 +1124,29 @@ class MainWindow(QMainWindow):
     async def _sync_sftp_with_terminal_cwd(self) -> None:
         """Sync SFTP browser with terminal's current working directory."""
         # Check if follow mode is enabled
-        if not self._sftp_visible or not self._sftp_browser.follow_terminal:
+        if not self._sftp_visible:
+            logger.debug("SFTP sync skipped: panel not visible")
+            return
+        if not self._sftp_browser.follow_terminal:
+            logger.debug("SFTP sync skipped: follow terminal disabled")
             return
 
         # Check if we have an active connected session
         session = self._get_active_session()
         if not session or not session.is_connected or not session.ssh_session:
+            logger.debug("SFTP sync skipped: no active session")
             return
 
         try:
             # Get current working directory from terminal
             cwd = await session.ssh_session.execute_command("pwd", timeout=5.0)
             cwd = cwd.strip()
+            logger.debug(f"Terminal cwd: {cwd}")
 
             if cwd and cwd.startswith("/"):
                 # Update file browser if path changed
                 if cwd != self._sftp_browser.current_path:
+                    logger.debug(f"Navigating SFTP to: {cwd}")
                     self._sftp_browser.set_path(cwd)
         except Exception as e:
             logger.debug(f"Could not get terminal cwd: {e}")
@@ -1149,12 +1156,132 @@ class MainWindow(QMainWindow):
         if not hasattr(self, "_sftp_sync_timer"):
             self._sftp_sync_timer = QTimer()
             self._sftp_sync_timer.setSingleShot(True)
-            self._sftp_sync_timer.timeout.connect(
-                lambda: asyncio.ensure_future(self._sync_sftp_with_terminal_cwd())
-            )
+            self._sftp_sync_timer.timeout.connect(self._do_sftp_sync)
 
         # Debounce: wait 500ms after last input before syncing
         self._sftp_sync_timer.start(500)
+
+    def _do_sftp_sync(self) -> None:
+        """Execute SFTP sync (called by timer)."""
+        asyncio.ensure_future(self._sync_sftp_with_terminal_cwd())
+
+    def _track_terminal_input(self, session: TabSession, data: str) -> None:
+        """Track terminal input to detect cd commands."""
+        # Initialize input buffer if needed
+        if not hasattr(session, '_input_buffer'):
+            session._input_buffer = ""
+            session._current_cwd = "~"  # Start at home
+
+        # Handle special characters
+        if data == '\x7f' or data == '\b':  # Backspace
+            if session._input_buffer:
+                session._input_buffer = session._input_buffer[:-1]
+            return
+        elif data == '\x03':  # Ctrl+C
+            session._input_buffer = ""
+            return
+        elif data == '\x15':  # Ctrl+U (clear line)
+            session._input_buffer = ""
+            return
+
+        # Check for Enter key
+        if '\r' in data or '\n' in data:
+            command = session._input_buffer.strip()
+            session._input_buffer = ""
+
+            # Detect cd command
+            if command:
+                self._process_cd_command(session, command)
+        else:
+            # Accumulate input
+            session._input_buffer += data
+
+    def _process_cd_command(self, session: TabSession, command: str) -> None:
+        """Process a command to detect cd and update SFTP path."""
+        import re
+
+        # Match cd commands: cd, cd -, cd ~, cd /path, cd path, cd "path with spaces"
+        cd_pattern = r'^cd\s*(.*)$'
+        match = re.match(cd_pattern, command)
+
+        if not match:
+            return
+
+        path_arg = match.group(1).strip()
+
+        # Remove quotes if present
+        if path_arg.startswith('"') and path_arg.endswith('"'):
+            path_arg = path_arg[1:-1]
+        elif path_arg.startswith("'") and path_arg.endswith("'"):
+            path_arg = path_arg[1:-1]
+
+        # Determine new path
+        current = getattr(session, '_current_cwd', '~')
+
+        if not path_arg or path_arg == '~':
+            new_path = '~'
+        elif path_arg == '-':
+            # cd - : go to previous directory (not tracked, skip)
+            return
+        elif path_arg.startswith('/'):
+            # Absolute path
+            new_path = path_arg
+        elif path_arg == '..':
+            # Parent directory
+            if current == '~' or current == '/':
+                new_path = '/'
+            else:
+                from pathlib import PurePosixPath
+                new_path = str(PurePosixPath(current).parent)
+        elif path_arg.startswith('~/'):
+            # Home-relative path
+            new_path = path_arg
+        else:
+            # Relative path
+            from pathlib import PurePosixPath
+            if current == '~':
+                new_path = f"~/{path_arg}"
+            else:
+                new_path = str(PurePosixPath(current) / path_arg)
+
+        # Normalize path (remove . and ..)
+        if new_path not in ('~', '/') and not new_path.startswith('~/'):
+            parts = []
+            for part in new_path.split('/'):
+                if part == '..':
+                    if parts:
+                        parts.pop()
+                elif part and part != '.':
+                    parts.append(part)
+            new_path = '/' + '/'.join(parts) if parts else '/'
+
+        # Don't update _current_cwd here - it will be updated by _on_sftp_directory_changed
+        # when SFTP navigation succeeds
+        logger.debug(f"Detected cd to: {new_path}")
+
+        # Update SFTP browser if follow mode is enabled
+        self._trigger_sftp_path_update(new_path)
+
+    def _trigger_sftp_path_update(self, path: str) -> None:
+        """Update SFTP browser to the given path if follow mode is enabled."""
+        if not self._sftp_visible:
+            return
+        if not self._sftp_browser.follow_terminal:
+            return
+
+        # Update file browser path
+        if path != self._sftp_browser.current_path:
+            logger.debug(f"Navigating SFTP to: {path}")
+            self._sftp_browser.set_path(path)
+
+    @Slot(str)
+    def _on_sftp_directory_changed(self, path: str) -> None:
+        """Handle SFTP directory change - sync session's _current_cwd."""
+        session = self._get_active_session()
+        if session:
+            # Update the tracked cwd when SFTP successfully navigates
+            session._current_cwd = path
+            logger.debug(f"Session cwd synced to: {path}")
 
     @Slot()
     def _on_config_clicked(self) -> None:

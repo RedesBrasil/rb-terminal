@@ -811,11 +811,12 @@ class FileBrowser(QWidget):
             self.directory_changed.emit(new_path)
 
         except FileNotFoundError:
-            self._set_status("Diretório não encontrado")
-            QMessageBox.warning(self, "Erro", f"Diretório não encontrado: {path}")
+            self._set_status(f"Diretório não encontrado: {path}")
+            # Don't show QMessageBox - it blocks the event loop and freezes terminal
+            logger.warning(f"Directory not found: {path}")
         except PermissionError:
-            self._set_status("Permissão negada")
-            QMessageBox.warning(self, "Erro", f"Permissão negada: {path}")
+            self._set_status(f"Permissão negada: {path}")
+            logger.warning(f"Permission denied: {path}")
         except Exception as e:
             logger.error(f"Error loading directory: {e}")
             self._set_status(f"Erro: {e}")
@@ -923,7 +924,8 @@ class FileBrowser(QWidget):
 
     def _on_follow_changed(self, state: int) -> None:
         """Handle follow terminal checkbox change."""
-        self._follow_terminal = state == Qt.CheckState.Checked.value
+        self._follow_terminal = state == 2  # Qt.CheckState.Checked = 2
+        logger.debug(f"Follow terminal changed: {self._follow_terminal}")
 
     def _on_toggle_hidden(self) -> None:
         """Toggle hidden files visibility."""
