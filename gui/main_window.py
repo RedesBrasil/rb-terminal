@@ -205,10 +205,9 @@ class MainWindow(QMainWindow):
 
         # Tab widget for multiple terminals
         self._tab_widget = QTabWidget()
-        self._tab_widget.setTabsClosable(True)
+        self._tab_widget.setTabsClosable(False)  # We'll add custom close buttons
         self._tab_widget.setMovable(True)
         self._tab_widget.setDocumentMode(True)
-        self._tab_widget.tabCloseRequested.connect(self._on_tab_close_requested)
         self._tab_widget.currentChanged.connect(self._on_tab_changed)
 
         # Style the tab widget
@@ -231,18 +230,6 @@ class MainWindow(QMainWindow):
             }
             QTabBar::tab:hover:!selected {
                 background-color: #3c3c3c;
-            }
-            QTabBar::close-button {
-                subcontrol-position: right;
-                background-color: #c42b1c;
-                border-radius: 3px;
-                width: 16px;
-                height: 16px;
-                margin: 2px;
-                image: url(resources/close.svg);
-            }
-            QTabBar::close-button:hover {
-                background-color: #e81123;
             }
         """)
 
@@ -639,6 +626,30 @@ class MainWindow(QMainWindow):
         """Show the terminal view."""
         self._stacked_widget.setCurrentIndex(1)
 
+    def _create_tab_close_button(self, terminal: QWidget) -> QLabel:
+        """Create a custom close button for a tab."""
+        close_btn = QLabel("✕")
+        close_btn.setFixedSize(16, 16)
+        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        close_btn.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        close_btn.setStyleSheet("""
+            QLabel {
+                background-color: #c42b1c;
+                color: white;
+                border-radius: 3px;
+                font-size: 10px;
+                font-weight: bold;
+            }
+            QLabel:hover {
+                background-color: #e81123;
+            }
+        """)
+        # Find current index by terminal widget (handles tab reordering)
+        close_btn.mousePressEvent = lambda e, t=terminal: self._on_tab_close_requested(
+            self._tab_widget.indexOf(t)
+        )
+        return close_btn
+
     def _create_new_tab(self) -> TabSession:
         """Create a new empty terminal tab."""
         session = TabSession()
@@ -663,6 +674,12 @@ class MainWindow(QMainWindow):
 
         # Add tab to widget (no icon for new disconnected tabs)
         index = self._tab_widget.addTab(session.terminal, session.display_name)
+
+        # Add custom close button
+        close_btn = self._create_tab_close_button(session.terminal)
+        from PySide6.QtWidgets import QTabBar
+        self._tab_widget.tabBar().setTabButton(index, QTabBar.ButtonPosition.RightSide, close_btn)
+
         self._tab_widget.setCurrentIndex(index)
 
         return session
