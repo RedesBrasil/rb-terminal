@@ -81,6 +81,7 @@ Salvos em `~/.rb-terminal/` (ou `%APPDATA%\.rb-terminal` no Windows):
     {
       "id": "uuid",
       "name": "Router Principal",
+      "hosts": ["192.168.1.1", "router.example.com", "2001:db8::1"],
       "host": "192.168.1.1",
       "port": 22,
       "username": "admin",
@@ -161,3 +162,4 @@ Dialog de configurações com seções: API OpenRouter, Armazenamento (caminho c
 8. **Port Knocking:** Sequência de portas TCP/UDP acionadas antes da conexão SSH (fire and forget, sem esperar resposta)
 9. **Winbox:** Menu de contexto do host lança `winbox.exe <ip>:<porta> <user> <senha>`. Porta padrão 8291, configurável por host. Port knocking executado antes se configurado.
 10. **Acesso Web:** Menu de contexto abre navegador padrão com `http(s)://<ip>:<porta>`. Porta e HTTPS configuráveis por host em Opções Avançadas.
+11. **Múltiplos IPs:** Cada host pode ter múltiplos endereços (IP local, público, IPv6, domínio). Campo `hosts` é lista, `host` é propriedade de compatibilidade que retorna o primeiro. Ao conectar: fallback automático entre IPs. Menu de contexto mostra submenu com todos os IPs disponíveis para SSH, Winbox e Web.

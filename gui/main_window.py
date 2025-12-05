@@ -1012,8 +1012,13 @@ class MainWindow(QMainWindow):
 
         asyncio.ensure_future(self._connect_session_async(session, config))
 
-    def _connect_to_host(self, host_id: str) -> None:
-        """Connect to a saved host. Opens new tab if current is connected."""
+    def _connect_to_host(self, host_id: str, specific_ip: str = "") -> None:
+        """Connect to a saved host. Opens new tab if current is connected.
+
+        Args:
+            host_id: ID of the host to connect to
+            specific_ip: Specific IP to use. If empty, will try all IPs with fallback.
+        """
         host = self._data_manager.get_host_by_id(host_id)
         if not host:
             return
@@ -1030,11 +1035,23 @@ class MainWindow(QMainWindow):
         # Get saved password if available (may be None)
         password = self._data_manager.get_password(host_id)
 
+        # Determine which IP(s) to try
+        if specific_ip:
+            # Specific IP selected from submenu - use only this IP
+            target_ip = specific_ip
+        else:
+            # No specific IP - use first IP (fallback will be handled in connection logic)
+            target_ip = host.host
+
+        # Store all hosts for fallback if not using specific IP
+        session.fallback_hosts = host.hosts if not specific_ip and len(host.hosts) > 1 else []
+        session.current_host_index = 0
+
         # Use unified connection method
         # get_effective_username() applies +ct suffix for MikroTik if configured (deprecated)
         self._initiate_connection_for_session(
             session=session,
-            host=host.host,
+            host=target_ip,
             port=host.port,
             username=host.get_effective_username(),
             password=password or "",
@@ -1156,8 +1173,13 @@ class MainWindow(QMainWindow):
                 pass  # Fire and forget - ignore all errors
         logger.debug(f"Port knocking completed for {host}: {sequence}")
 
-    def _launch_winbox(self, host_id: str) -> None:
-        """Launch Winbox for the specified host."""
+    def _launch_winbox(self, host_id: str, specific_ip: str = "") -> None:
+        """Launch Winbox for the specified host.
+
+        Args:
+            host_id: ID of the host
+            specific_ip: Specific IP to use. If empty, uses first IP.
+        """
         # Check if Winbox path is configured
         winbox_path = self._data_manager.settings.winbox_path
         if not winbox_path:
@@ -1180,6 +1202,9 @@ class MainWindow(QMainWindow):
         if not host:
             return
 
+        # Determine which IP to use
+        target_ip = specific_ip if specific_ip else host.host
+
         # Winbox port (0 = use default 8291)
         winbox_port = host.winbox_port if host.winbox_port else 8291
 
@@ -1188,47 +1213,69 @@ class MainWindow(QMainWindow):
 
         # Port knocking before opening Winbox
         if host.port_knocking:
-            asyncio.create_task(self._perform_port_knock(host.host, host.port_knocking))
+            asyncio.create_task(self._perform_port_knock(target_ip, host.port_knocking))
             # Small delay for port knocking to complete
             QTimer.singleShot(500, lambda: self._execute_winbox(
-                winbox_path, host.host, winbox_port, host.username, password or ""
+                winbox_path, target_ip, winbox_port, host.username, password or ""
             ))
         else:
-            self._execute_winbox(winbox_path, host.host, winbox_port, host.username, password or "")
+            self._execute_winbox(winbox_path, target_ip, winbox_port, host.username, password or "")
+
+    def _format_host_port(self, host: str, port: int) -> str:
+        """Format host:port, handling IPv6 addresses with brackets."""
+        # Check if it's an IPv6 address (contains : but not already bracketed)
+        if ':' in host and not host.startswith('['):
+            return f"[{host}]:{port}"
+        return f"{host}:{port}"
 
     def _execute_winbox(self, winbox_path: str, host: str, port: int, user: str, password: str) -> None:
         """Execute Winbox with parameters."""
         # Format: winbox.exe ip:port user password
-        args = [winbox_path, f"{host}:{port}", user, password]
+        host_port = self._format_host_port(host, port)
+        args = [winbox_path, host_port, user, password]
 
         try:
             subprocess.Popen(args, creationflags=subprocess.DETACHED_PROCESS)
-            self._status_bar.showMessage(f"Winbox iniciado para {host}:{port}", 3000)
-            logger.info(f"Winbox launched for {host}:{port}")
+            self._status_bar.showMessage(f"Winbox iniciado para {host_port}", 3000)
+            logger.info(f"Winbox launched for {host_port}")
         except Exception as e:
             logger.error(f"Failed to launch Winbox: {e}")
             QMessageBox.critical(self, "Erro", f"Erro ao iniciar Winbox:\n{e}")
 
-    def _open_web_access(self, host_id: str) -> None:
-        """Open web browser for the specified host."""
+    def _open_web_access(self, host_id: str, specific_ip: str = "") -> None:
+        """Open web browser for the specified host.
+
+        Args:
+            host_id: ID of the host
+            specific_ip: Specific IP to use. If empty, uses first IP.
+        """
         # Get host data
         host = self._data_manager.get_host_by_id(host_id)
         if not host:
             return
 
-        # Build URL
+        # Determine which IP to use
+        target_ip = specific_ip if specific_ip else host.host
+
+        # Build URL - handle IPv6 addresses with brackets
         protocol = "https" if host.https_enabled else "http"
         port = host.http_port
 
+        # Format host for URL (IPv6 needs brackets)
+        if ':' in target_ip and not target_ip.startswith('['):
+            formatted_host = f"[{target_ip}]"
+        else:
+            formatted_host = target_ip
+
         # Only add port to URL if not default
         if (protocol == "http" and port == 80) or (protocol == "https" and port == 443):
-            url = f"{protocol}://{host.host}"
+            url = f"{protocol}://{formatted_host}"
         else:
-            url = f"{protocol}://{host.host}:{port}"
+            url = f"{protocol}://{formatted_host}:{port}"
 
         # Port knocking before opening browser
         if host.port_knocking:
-            asyncio.create_task(self._perform_port_knock(host.host, host.port_knocking))
+            asyncio.create_task(self._perform_port_knock(target_ip, host.port_knocking))
             # Small delay for port knocking to complete
             QTimer.singleShot(500, lambda: self._execute_web_access(url))
         else:
@@ -1309,8 +1356,33 @@ class MainWindow(QMainWindow):
         except Exception as e:
             logger.error(f"Connection failed: {e}")
             session.ssh_session = None
+
+            # Check if we have fallback hosts to try
+            if session.fallback_hosts and session.current_host_index < len(session.fallback_hosts) - 1:
+                session.current_host_index += 1
+                next_ip = session.fallback_hosts[session.current_host_index]
+                self._status_bar.showMessage(f"Falha em {config.host}. Tentando {next_ip}...")
+                logger.info(f"Trying fallback IP: {next_ip}")
+
+                # Create new config with next IP
+                new_config = SSHConfig(
+                    host=next_ip,
+                    port=config.port,
+                    username=config.username,
+                    password=config.password,
+                    terminal_type=config.terminal_type,
+                    term_width=config.term_width,
+                    term_height=config.term_height,
+                )
+                # Retry with next IP
+                asyncio.ensure_future(self._connect_session_async(session, new_config))
+                return
+
+            # No more fallback hosts - show error
             session.pending_connection = None
             session.connection_status = "disconnected"
+            session.fallback_hosts = []  # Clear fallback list
+            session.current_host_index = 0
             self._update_tab_status(session)
             QMessageBox.critical(
                 self,

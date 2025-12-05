@@ -30,11 +30,11 @@ class TagLabel(QLabel):
 class HostCard(QFrame):
     """Card widget for displaying a host."""
 
-    connect_requested = Signal(str)  # host_id
+    connect_requested = Signal(str, str)  # host_id, ip (empty for fallback)
     edit_requested = Signal(str)  # host_id
     delete_requested = Signal(str)  # host_id
-    winbox_requested = Signal(str)  # host_id
-    web_access_requested = Signal(str)  # host_id
+    winbox_requested = Signal(str, str)  # host_id, ip
+    web_access_requested = Signal(str, str)  # host_id, ip
 
     def __init__(self, host: Host, parent=None):
         super().__init__(parent)
@@ -58,8 +58,12 @@ class HostCard(QFrame):
         name_label.setWordWrap(True)
         layout.addWidget(name_label)
 
-        # Host address
-        address_label = QLabel(f"{self._host.host}:{self._host.port}")
+        # Host address (show +N if multiple IPs)
+        extra_ips = len(self._host.hosts) - 1 if self._host.hosts else 0
+        address_text = f"{self._host.host}:{self._host.port}"
+        if extra_ips > 0:
+            address_text += f" (+{extra_ips})"
+        address_label = QLabel(address_text)
         address_label.setStyleSheet("font-size: 12px; color: #888888;")
         layout.addWidget(address_label)
 
@@ -102,9 +106,9 @@ class HostCard(QFrame):
             }
         """)
 
-    def _show_context_menu(self, pos):
-        menu = QMenu(self)
-        menu.setStyleSheet("""
+    def _get_menu_style(self) -> str:
+        """Get common menu stylesheet."""
+        return """
             QMenu {
                 background-color: #3c3c3c;
                 border: 1px solid #555555;
@@ -119,16 +123,37 @@ class HostCard(QFrame):
             QMenu::item:selected {
                 background-color: #094771;
             }
-        """)
+        """
 
-        connect_action = menu.addAction("Conectar")
-        connect_action.triggered.connect(lambda: self.connect_requested.emit(self._host.id))
+    def _create_ip_submenu(self, parent_menu: QMenu, action_name: str, signal) -> None:
+        """Create a submenu with IP options or simple action if only one IP."""
+        hosts = self._host.hosts if self._host.hosts else []
 
-        winbox_action = menu.addAction("Winbox")
-        winbox_action.triggered.connect(lambda: self.winbox_requested.emit(self._host.id))
+        if len(hosts) <= 1:
+            # Single IP - simple action
+            action = parent_menu.addAction(action_name)
+            action.triggered.connect(lambda: signal.emit(self._host.id, ""))
+        else:
+            # Multiple IPs - create submenu
+            submenu = parent_menu.addMenu(action_name)
+            submenu.setStyleSheet(self._get_menu_style())
 
-        web_action = menu.addAction("Acesso Web")
-        web_action.triggered.connect(lambda: self.web_access_requested.emit(self._host.id))
+            for ip in hosts:
+                ip_action = submenu.addAction(ip)
+                ip_action.triggered.connect(lambda checked, addr=ip: signal.emit(self._host.id, addr))
+
+    def _show_context_menu(self, pos):
+        menu = QMenu(self)
+        menu.setStyleSheet(self._get_menu_style())
+
+        # SSH/Connect with IP submenu
+        self._create_ip_submenu(menu, "Acesso SSH", self.connect_requested)
+
+        # Winbox with IP submenu
+        self._create_ip_submenu(menu, "Winbox", self.winbox_requested)
+
+        # Web access with IP submenu
+        self._create_ip_submenu(menu, "Acesso Web", self.web_access_requested)
 
         menu.addSeparator()
 
@@ -142,7 +167,7 @@ class HostCard(QFrame):
 
     def mouseDoubleClickEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.connect_requested.emit(self._host.id)
+            self.connect_requested.emit(self._host.id, "")  # Empty = use fallback
         super().mouseDoubleClickEvent(event)
 
     @property
@@ -153,11 +178,11 @@ class HostCard(QFrame):
 class HostListItem(QFrame):
     """List item widget for displaying a host in list view."""
 
-    connect_requested = Signal(str)  # host_id
+    connect_requested = Signal(str, str)  # host_id, ip (empty for fallback)
     edit_requested = Signal(str)  # host_id
     delete_requested = Signal(str)  # host_id
-    winbox_requested = Signal(str)  # host_id
-    web_access_requested = Signal(str)  # host_id
+    winbox_requested = Signal(str, str)  # host_id, ip
+    web_access_requested = Signal(str, str)  # host_id, ip
 
     def __init__(self, host: Host, parent=None):
         super().__init__(parent)
@@ -183,7 +208,12 @@ class HostListItem(QFrame):
         name_label.setStyleSheet("font-size: 13px; font-weight: bold; color: #ffffff;")
         left_layout.addWidget(name_label)
 
-        address_label = QLabel(f"{self._host.host}:{self._host.port}")
+        # Host address (show +N if multiple IPs)
+        extra_ips = len(self._host.hosts) - 1 if self._host.hosts else 0
+        address_text = f"{self._host.host}:{self._host.port}"
+        if extra_ips > 0:
+            address_text += f" (+{extra_ips})"
+        address_label = QLabel(address_text)
         address_label.setStyleSheet("font-size: 11px; color: #888888;")
         left_layout.addWidget(address_label)
 
@@ -224,9 +254,9 @@ class HostListItem(QFrame):
             }
         """)
 
-    def _show_context_menu(self, pos):
-        menu = QMenu(self)
-        menu.setStyleSheet("""
+    def _get_menu_style(self) -> str:
+        """Get common menu stylesheet."""
+        return """
             QMenu {
                 background-color: #3c3c3c;
                 border: 1px solid #555555;
@@ -241,16 +271,37 @@ class HostListItem(QFrame):
             QMenu::item:selected {
                 background-color: #094771;
             }
-        """)
+        """
 
-        connect_action = menu.addAction("Conectar")
-        connect_action.triggered.connect(lambda: self.connect_requested.emit(self._host.id))
+    def _create_ip_submenu(self, parent_menu: QMenu, action_name: str, signal) -> None:
+        """Create a submenu with IP options or simple action if only one IP."""
+        hosts = self._host.hosts if self._host.hosts else []
 
-        winbox_action = menu.addAction("Winbox")
-        winbox_action.triggered.connect(lambda: self.winbox_requested.emit(self._host.id))
+        if len(hosts) <= 1:
+            # Single IP - simple action
+            action = parent_menu.addAction(action_name)
+            action.triggered.connect(lambda: signal.emit(self._host.id, ""))
+        else:
+            # Multiple IPs - create submenu
+            submenu = parent_menu.addMenu(action_name)
+            submenu.setStyleSheet(self._get_menu_style())
 
-        web_action = menu.addAction("Acesso Web")
-        web_action.triggered.connect(lambda: self.web_access_requested.emit(self._host.id))
+            for ip in hosts:
+                ip_action = submenu.addAction(ip)
+                ip_action.triggered.connect(lambda checked, addr=ip: signal.emit(self._host.id, addr))
+
+    def _show_context_menu(self, pos):
+        menu = QMenu(self)
+        menu.setStyleSheet(self._get_menu_style())
+
+        # SSH/Connect with IP submenu
+        self._create_ip_submenu(menu, "Acesso SSH", self.connect_requested)
+
+        # Winbox with IP submenu
+        self._create_ip_submenu(menu, "Winbox", self.winbox_requested)
+
+        # Web access with IP submenu
+        self._create_ip_submenu(menu, "Acesso Web", self.web_access_requested)
 
         menu.addSeparator()
 
@@ -264,7 +315,7 @@ class HostListItem(QFrame):
 
     def mouseDoubleClickEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.connect_requested.emit(self._host.id)
+            self.connect_requested.emit(self._host.id, "")  # Empty = use fallback
         super().mouseDoubleClickEvent(event)
 
     @property

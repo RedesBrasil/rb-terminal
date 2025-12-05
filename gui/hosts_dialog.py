@@ -89,10 +89,20 @@ class HostDialog(QDialog):
         self._name_input.setPlaceholderText("Ex: Mikrotik Principal")
         form.addRow("Nome:", self._name_input)
 
-        # Host
-        self._host_input = QLineEdit()
-        self._host_input.setPlaceholderText("192.168.1.1")
-        form.addRow("Host/IP:", self._host_input)
+        # Host/IP section (multiple IPs support)
+        self._hosts_container = QWidget()
+        self._hosts_layout = QVBoxLayout()
+        self._hosts_layout.setContentsMargins(0, 0, 0, 0)
+        self._hosts_layout.setSpacing(5)
+        self._hosts_container.setLayout(self._hosts_layout)
+
+        # List of host input entries
+        self._host_entries = []  # List of (input, row_widget)
+
+        # Add first host entry (always visible, no remove button)
+        self._add_host_entry(is_first=True)
+
+        form.addRow("Host/IP:", self._hosts_container)
 
         # Port
         self._port_input = QSpinBox()
@@ -401,7 +411,17 @@ class HostDialog(QDialog):
             return
 
         self._name_input.setText(self._host.name)
-        self._host_input.setText(self._host.host)
+
+        # Populate hosts (first entry already exists)
+        hosts = self._host.hosts if self._host.hosts else []
+        if hosts:
+            # Set first host in existing entry
+            if self._host_entries:
+                self._host_entries[0][0].setText(hosts[0])
+            # Add additional entries for remaining hosts
+            for ip in hosts[1:]:
+                self._add_host_entry(value=ip)
+
         self._port_input.setValue(self._host.port)
         self._user_input.setText(self._host.username)
         self._terminal_type.setCurrentText(self._host.terminal_type)
@@ -456,6 +476,87 @@ class HostDialog(QDialog):
         self._pass_input.setEnabled(not checked)
         if checked:
             self._pass_input.clear()
+
+    def _add_host_entry(self, value: str = "", is_first: bool = False) -> None:
+        """Add a new host/IP input row."""
+        row_widget = QWidget()
+        row_layout = QHBoxLayout()
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        row_layout.setSpacing(5)
+        row_widget.setLayout(row_layout)
+
+        # Host input
+        host_input = QLineEdit()
+        host_input.setPlaceholderText("192.168.1.1 ou hostname")
+        host_input.setText(value)
+        row_layout.addWidget(host_input)
+
+        if is_first:
+            # First entry has + button only
+            add_btn = QPushButton("+")
+            add_btn.setFixedSize(30, 28)
+            add_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #3c3c3c;
+                    border: 1px solid #555555;
+                    border-radius: 3px;
+                    color: #dcdcdc;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #4a4a4a;
+                }
+            """)
+            add_btn.clicked.connect(lambda: self._add_host_entry())
+            row_layout.addWidget(add_btn)
+        else:
+            # Additional entries have - button
+            remove_btn = QPushButton("−")
+            remove_btn.setFixedSize(30, 28)
+            remove_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #5a3a3a;
+                    border: 1px solid #6a4a4a;
+                    border-radius: 3px;
+                    color: #dcdcdc;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #6a4a4a;
+                }
+            """)
+            remove_btn.clicked.connect(lambda: self._remove_host_entry(row_widget))
+            row_layout.addWidget(remove_btn)
+
+        # Store reference and add to layout
+        self._host_entries.append((host_input, row_widget))
+        self._hosts_layout.addWidget(row_widget)
+
+        # Focus the new input if not first
+        if not is_first:
+            host_input.setFocus()
+
+        # Force layout update
+        self.adjustSize()
+
+    def _remove_host_entry(self, row_widget: QWidget) -> None:
+        """Remove a host/IP input row."""
+        for i, (_, widget) in enumerate(self._host_entries):
+            if widget == row_widget:
+                self._host_entries.pop(i)
+                self._hosts_layout.removeWidget(row_widget)
+                row_widget.deleteLater()
+                self.adjustSize()
+                break
+
+    def _get_hosts_list(self) -> list:
+        """Get list of hosts/IPs from input fields."""
+        hosts = []
+        for host_input, _ in self._host_entries:
+            value = host_input.text().strip()
+            if value:
+                hosts.append(value)
+        return hosts
 
     def _toggle_info_section(self, checked: bool) -> None:
         """Toggle additional info section visibility."""
@@ -556,7 +657,7 @@ class HostDialog(QDialog):
     def _on_save(self) -> None:
         """Handle save button click."""
         name = self._name_input.text().strip()
-        host = self._host_input.text().strip()
+        hosts = self._get_hosts_list()
         port = self._port_input.value()
         username = self._user_input.text().strip()
         password = self._pass_input.text()
@@ -581,9 +682,10 @@ class HostDialog(QDialog):
             self._name_input.setFocus()
             return
 
-        if not host:
-            QMessageBox.warning(self, "Erro", "Digite o endereço IP ou hostname.")
-            self._host_input.setFocus()
+        if not hosts:
+            QMessageBox.warning(self, "Erro", "Digite pelo menos um endereço IP ou hostname.")
+            if self._host_entries:
+                self._host_entries[0][0].setFocus()
             return
 
         # Username and password are optional - will be prompted during connection if needed
@@ -605,7 +707,7 @@ class HostDialog(QDialog):
                 self._data_manager.update_host(
                     host_id=self._host.id,
                     name=name,
-                    host=host,
+                    hosts=hosts,
                     port=port,
                     username=username,
                     password=password if password else None,
@@ -628,7 +730,7 @@ class HostDialog(QDialog):
                 # Add new host
                 self._data_manager.add_host(
                     name=name,
-                    host=host,
+                    hosts=hosts,
                     port=port,
                     username=username,
                     password=password if password else None,

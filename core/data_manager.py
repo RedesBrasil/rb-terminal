@@ -88,7 +88,7 @@ class Host:
     """Represents a saved SSH host."""
     id: str = field(default_factory=lambda: str(uuid.uuid4()))
     name: str = ""
-    host: str = ""
+    hosts: list = field(default_factory=list)  # Lista de IPs/hostnames
     port: int = 22
     username: str = ""
     password_encrypted: Optional[str] = None
@@ -107,8 +107,21 @@ class Host:
     http_port: int = 80  # Porta HTTP para acesso web
     https_enabled: bool = False  # Usar HTTPS ao invés de HTTP
 
+    @property
+    def host(self) -> str:
+        """Retorna o primeiro IP/hostname para compatibilidade."""
+        return self.hosts[0] if self.hosts else ""
+
+    @property
+    def primary_host(self) -> str:
+        """Alias para host - retorna o primeiro IP/hostname."""
+        return self.host
+
     def to_dict(self) -> dict:
-        return asdict(self)
+        data = asdict(self)
+        # Também salva 'host' para compatibilidade com versões anteriores
+        data["host"] = self.host
+        return data
 
     def get_effective_username(self) -> str:
         """Get username with any required suffixes."""
@@ -121,10 +134,15 @@ class Host:
 
     @classmethod
     def from_dict(cls, data: dict) -> "Host":
+        # Migração: se existir 'host' mas não 'hosts', converte para lista
+        hosts_list = data.get("hosts", [])
+        if not hosts_list and data.get("host"):
+            hosts_list = [data.get("host")]
+
         return cls(
             id=data.get("id", str(uuid.uuid4())),
             name=data.get("name", ""),
-            host=data.get("host", ""),
+            hosts=hosts_list,
             port=data.get("port", 22),
             username=data.get("username", ""),
             password_encrypted=data.get("password_encrypted"),
@@ -862,7 +880,7 @@ class DataManager:
     def add_host(
         self,
         name: str,
-        host: str,
+        hosts: Optional[list] = None,
         port: int = 22,
         username: str = "",
         password: Optional[str] = None,
@@ -885,9 +903,11 @@ class DataManager:
         if password:
             password_encrypted = self._crypto.encrypt(password) if self._crypto else password
 
+        hosts_list = hosts if hosts else []
+
         new_host = Host(
             name=name,
-            host=host,
+            hosts=hosts_list,
             port=port,
             username=username,
             password_encrypted=password_encrypted,
@@ -908,14 +928,14 @@ class DataManager:
 
         self._hosts.append(new_host)
         self._save()
-        logger.info(f"Added new host: {name} ({host})")
+        logger.info(f"Added new host: {name} ({new_host.host})")
         return new_host
 
     def update_host(
         self,
         host_id: str,
         name: Optional[str] = None,
-        host: Optional[str] = None,
+        hosts: Optional[list] = None,
         port: Optional[int] = None,
         username: Optional[str] = None,
         password: Optional[str] = None,
@@ -941,8 +961,8 @@ class DataManager:
 
         if name is not None:
             existing.name = name
-        if host is not None:
-            existing.host = host
+        if hosts is not None:
+            existing.hosts = hosts
         if port is not None:
             existing.port = port
         if username is not None:

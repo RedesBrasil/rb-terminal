@@ -27,11 +27,11 @@ class FlowLayout(QGridLayout):
 class HostsView(QWidget):
     """Main view for displaying and managing hosts."""
 
-    connect_requested = Signal(str)  # host_id
+    connect_requested = Signal(str, str)  # host_id, ip (empty for fallback)
     edit_requested = Signal(str)  # host_id
     delete_requested = Signal(str)  # host_id
-    winbox_requested = Signal(str)  # host_id
-    web_access_requested = Signal(str)  # host_id
+    winbox_requested = Signal(str, str)  # host_id, ip
+    web_access_requested = Signal(str, str)  # host_id, ip
     add_requested = Signal()
     quick_connect_requested = Signal()
 

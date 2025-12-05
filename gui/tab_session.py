@@ -47,6 +47,9 @@ class TabSession:
     tags: Optional[List[str]] = None
     notes: Optional[str] = None
     port_knocking: Optional[List[dict]] = None
+    # Fallback hosts for connection retry
+    fallback_hosts: List[str] = field(default_factory=list)
+    current_host_index: int = 0
 
     @property
     def is_connected(self) -> bool:
