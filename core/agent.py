@@ -43,8 +43,7 @@ class SSHAgent:
     Uses OpenRouter API with function calling.
     """
 
-    BASE_SYSTEM_PROMPT = """Você é um especialista em administração de sistemas, redes e servidores.
-Você tem experiência com Mikrotik RouterOS, Cisco IOS, Huawei e Linux.
+    DEFAULT_SYSTEM_PROMPT = """Você é um especialista em administração de sistemas, redes e servidores.
 
 Seu objetivo é ajudar o usuário a diagnosticar e resolver problemas executando comandos SSH.
 
@@ -53,16 +52,10 @@ Regras importantes:
 2. Seja conciso nas respostas
 3. Explique o que você encontrou após cada comando
 4. Se algo der errado, explique o problema e sugira soluções
-5. Para comandos potencialmente perigosos (rm, format, reset, reboot), avise o usuário primeiro
+5. Para comandos potencialmente perigosos (rm, format, reset, reboot), avise o usuário primeiro"""
 
-Você tem acesso à ferramenta execute_command para rodar comandos no terminal SSH conectado."""
-
-    DEVICE_TYPE_PROMPTS = {
-        "linux": "\n\nVocê está conectado a um sistema Linux. Use comandos Linux padrão (bash, systemctl, ip, etc.).",
-        "mikrotik": "\n\nVocê está conectado a um roteador MikroTik RouterOS. Use comandos RouterOS (interface print, ip address print, /system resource print, etc.).",
-        "huawei": "\n\nVocê está conectado a um dispositivo Huawei. Use comandos Huawei CLI (display, system-view, etc.).",
-        "cisco": "\n\nVocê está conectado a um dispositivo Cisco IOS. Use comandos Cisco CLI (show, configure terminal, etc.).",
-    }
+    # This is always injected at the end of the prompt (hidden from user)
+    TOOL_INSTRUCTION = "\n\nVocê tem acesso à ferramenta execute_command para rodar comandos no terminal SSH conectado."
 
     DEFAULT_MAX_ITERATIONS = 10
 
@@ -106,19 +99,11 @@ Você tem acesso à ferramenta execute_command para rodar comandos no terminal S
         Get the system prompt with device-specific context.
 
         Returns:
-            System prompt string with device type information if available
+            System prompt string with host information automatically injected
         """
-        prompt = self.BASE_SYSTEM_PROMPT
-
-        device_type = self.deps.device_type
-        if device_type:
-            # Try to find a specific prompt for this device type
-            device_key = device_type.lower()
-            if device_key in self.DEVICE_TYPE_PROMPTS:
-                prompt += self.DEVICE_TYPE_PROMPTS[device_key]
-            else:
-                # Generic message for custom device types
-                prompt += f"\n\nVocê está conectado a um dispositivo do tipo: {device_type}. Use comandos apropriados para este sistema."
+        # Use custom prompt if configured, otherwise use default
+        custom_prompt = self._data_manager.get_ai_system_prompt()
+        prompt = custom_prompt if custom_prompt else self.DEFAULT_SYSTEM_PROMPT
 
         # Add host connection info
         connection_info = []
@@ -164,6 +149,9 @@ Você tem acesso à ferramenta execute_command para rodar comandos no terminal S
 
         if metadata_parts:
             prompt += "\n\nMetadados do dispositivo:\n- " + "\n- ".join(metadata_parts)
+
+        # Always add tool instruction at the end (hidden from user's editable prompt)
+        prompt += self.TOOL_INSTRUCTION
 
         return prompt
 

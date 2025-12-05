@@ -64,6 +64,8 @@ class Settings:
     list_visible_fields: list = field(default_factory=lambda: ["name", "host", "port", "username", "tags", "device_type", "manufacturer"])
     # Larguras customizadas das colunas na lista (field_id: width)
     list_column_widths: dict = field(default_factory=dict)
+    # System prompt customizado para IA (vazio = usar default)
+    ai_system_prompt: str = ""
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -88,6 +90,7 @@ class Settings:
             card_visible_fields=data.get("card_visible_fields", ["name", "host", "tags", "device_type"]),
             list_visible_fields=data.get("list_visible_fields", ["name", "host", "port", "username", "tags", "device_type", "manufacturer"]),
             list_column_widths=data.get("list_column_widths", {}),
+            ai_system_prompt=data.get("ai_system_prompt", ""),
         )
 
 
@@ -868,6 +871,17 @@ class DataManager:
     def set_max_conversations_per_host(self, limit: int) -> None:
         """Set maximum conversations per host."""
         self._settings.max_conversations_per_host = max(1, min(100, limit))
+        self._save()
+
+    # === AI settings ===
+
+    def get_ai_system_prompt(self) -> str:
+        """Get custom AI system prompt (empty = use default)."""
+        return self._settings.ai_system_prompt
+
+    def set_ai_system_prompt(self, prompt: str) -> None:
+        """Set custom AI system prompt."""
+        self._settings.ai_system_prompt = prompt.strip()
         self._save()
 
     # === Conversation accessors ===

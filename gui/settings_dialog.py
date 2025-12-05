@@ -14,9 +14,9 @@ from PySide6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QLabel, QLineEdit,
     QPushButton, QGroupBox, QFormLayout, QMessageBox, QListWidget,
     QListWidgetItem, QApplication, QSpinBox, QComboBox, QFileDialog,
-    QFrame
+    QFrame, QTabWidget, QWidget, QTextEdit, QTextBrowser
 )
-from PySide6.QtCore import Qt, QThread, Signal, QEvent
+from PySide6.QtCore import Qt, QThread, Signal, QEvent, QTimer
 
 from core.data_manager import get_data_manager
 
@@ -60,11 +60,27 @@ class ModelFetcher(QThread):
 class SettingsDialog(QDialog):
     """Dialog for editing application settings."""
 
+    # Default system prompt (same as in agent.py for consistency)
+    DEFAULT_SYSTEM_PROMPT = """Você é um especialista em administração de sistemas, redes e servidores.
+
+Seu objetivo é ajudar o usuário a diagnosticar e resolver problemas executando comandos SSH.
+
+Regras importantes:
+1. Sempre leia a saída do comando antes de decidir o próximo passo
+2. Seja conciso nas respostas
+3. Explique o que você encontrou após cada comando
+4. Se algo der errado, explique o problema e sugira soluções
+5. Para comandos potencialmente perigosos (rm, format, reset, reboot), avise o usuário primeiro"""
+
+    # This is always injected (shown in preview but not editable)
+    TOOL_INSTRUCTION = "\n\nVocê tem acesso à ferramenta execute_command para rodar comandos no terminal SSH conectado."
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._data_manager = get_data_manager()
         self._all_models: list[tuple[str, str]] = []  # (name, id)
         self._model_fetcher: Optional[ModelFetcher] = None
+        self._preview_timer: Optional[QTimer] = None
         self._setup_ui()
         self._load_current_settings()
         self._fetch_models()
@@ -72,12 +88,44 @@ class SettingsDialog(QDialog):
     def _setup_ui(self) -> None:
         """Setup the dialog UI."""
         self.setWindowTitle("Configuracoes")
-        self.setMinimumWidth(600)
-        self.setMinimumHeight(200)
+        self.setMinimumWidth(650)
+        self.setMinimumHeight(400)
         self.setModal(True)
 
         layout = QVBoxLayout(self)
-        layout.setSpacing(16)
+        layout.setSpacing(12)
+
+        # Tab Widget
+        self._tab_widget = QTabWidget()
+        layout.addWidget(self._tab_widget)
+
+        # Create tabs
+        self._create_general_tab()
+        self._create_ai_tab()
+
+        # Buttons
+        buttons_layout = QHBoxLayout()
+        buttons_layout.addStretch()
+
+        cancel_btn = QPushButton("Cancelar")
+        cancel_btn.clicked.connect(self.reject)
+        buttons_layout.addWidget(cancel_btn)
+
+        save_btn = QPushButton("Salvar")
+        save_btn.setDefault(True)
+        save_btn.clicked.connect(self._on_save)
+        buttons_layout.addWidget(save_btn)
+
+        layout.addLayout(buttons_layout)
+
+        # Apply dark theme
+        self._apply_dark_theme()
+
+    def _create_general_tab(self) -> None:
+        """Create the General settings tab."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setSpacing(12)
 
         # API Settings Group
         api_group = QGroupBox("API OpenRouter")
@@ -215,23 +263,72 @@ class SettingsDialog(QDialog):
 
         layout.addWidget(winbox_group)
 
-        # Buttons
-        buttons_layout = QHBoxLayout()
-        buttons_layout.addStretch()
+        layout.addStretch()
 
-        cancel_btn = QPushButton("Cancelar")
-        cancel_btn.clicked.connect(self.reject)
-        buttons_layout.addWidget(cancel_btn)
+        self._tab_widget.addTab(tab, "Geral")
 
-        save_btn = QPushButton("Salvar")
-        save_btn.setDefault(True)
-        save_btn.clicked.connect(self._on_save)
-        buttons_layout.addWidget(save_btn)
+    def _create_ai_tab(self) -> None:
+        """Create the AI settings tab."""
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setSpacing(12)
 
-        layout.addLayout(buttons_layout)
+        # System Prompt Group
+        prompt_group = QGroupBox("System Prompt")
+        prompt_layout = QVBoxLayout(prompt_group)
 
-        # Apply dark theme
-        self._apply_dark_theme()
+        # Prompt text editor
+        self._prompt_edit = QTextEdit()
+        self._prompt_edit.setPlaceholderText("Digite o prompt do sistema aqui...")
+        self._prompt_edit.setMinimumHeight(150)
+        self._prompt_edit.textChanged.connect(self._on_prompt_changed)
+        prompt_layout.addWidget(self._prompt_edit)
+
+        # Info label
+        info_label = QLabel(
+            "ℹ️ Os dados do host conectado (nome, IP, tipo, fabricante, tags, etc.) "
+            "são adicionados automaticamente ao prompt."
+        )
+        info_label.setWordWrap(True)
+        info_label.setStyleSheet("color: #888888; font-size: 11px; padding: 4px 0;")
+        prompt_layout.addWidget(info_label)
+
+        # Reset button
+        reset_btn = QPushButton("Restaurar Padrao")
+        reset_btn.setFixedWidth(140)
+        reset_btn.clicked.connect(self._on_reset_prompt)
+        prompt_layout.addWidget(reset_btn)
+
+        layout.addWidget(prompt_group)
+
+        # Preview Group (collapsible)
+        self._preview_group = QGroupBox("Preview do Prompt Completo")
+        self._preview_group.setCheckable(True)
+        self._preview_group.setChecked(False)
+        self._preview_group.toggled.connect(self._on_preview_toggled)
+        preview_layout = QVBoxLayout(self._preview_group)
+
+        self._preview_browser = QTextBrowser()
+        self._preview_browser.setMinimumHeight(200)
+        self._preview_browser.setStyleSheet("""
+            QTextBrowser {
+                background-color: #2d2d2d;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                color: #dcdcdc;
+                font-family: monospace;
+                font-size: 12px;
+                padding: 8px;
+            }
+        """)
+        self._preview_browser.hide()
+        preview_layout.addWidget(self._preview_browser)
+
+        layout.addWidget(self._preview_group)
+
+        layout.addStretch()
+
+        self._tab_widget.addTab(tab, "IA")
 
     def _apply_dark_theme(self) -> None:
         """Apply dark theme to dialog."""
@@ -239,6 +336,28 @@ class SettingsDialog(QDialog):
             QDialog {
                 background-color: #1e1e1e;
                 color: #dcdcdc;
+            }
+            QTabWidget::pane {
+                border: 1px solid #3c3c3c;
+                background-color: #1e1e1e;
+                border-radius: 4px;
+            }
+            QTabBar::tab {
+                background-color: #2d2d2d;
+                color: #888888;
+                padding: 8px 20px;
+                border: 1px solid #3c3c3c;
+                border-bottom: none;
+                border-top-left-radius: 4px;
+                border-top-right-radius: 4px;
+            }
+            QTabBar::tab:selected {
+                background-color: #1e1e1e;
+                color: #dcdcdc;
+                border-bottom: 1px solid #1e1e1e;
+            }
+            QTabBar::tab:hover:!selected {
+                background-color: #383838;
             }
             QGroupBox {
                 background-color: #252526;
@@ -255,6 +374,22 @@ class SettingsDialog(QDialog):
                 padding: 0 5px;
                 color: #dcdcdc;
             }
+            QGroupBox::indicator {
+                width: 13px;
+                height: 13px;
+            }
+            QGroupBox::indicator:checked {
+                image: none;
+                background-color: #0e639c;
+                border: 1px solid #0e639c;
+                border-radius: 2px;
+            }
+            QGroupBox::indicator:unchecked {
+                image: none;
+                background-color: #3c3c3c;
+                border: 1px solid #555555;
+                border-radius: 2px;
+            }
             QLabel {
                 color: #dcdcdc;
             }
@@ -267,6 +402,17 @@ class SettingsDialog(QDialog):
                 min-height: 20px;
             }
             QLineEdit:focus, QSpinBox:focus {
+                border: 1px solid #007acc;
+            }
+            QTextEdit {
+                background-color: #2d2d2d;
+                border: 1px solid #555555;
+                border-radius: 3px;
+                color: #dcdcdc;
+                padding: 8px;
+                font-size: 13px;
+            }
+            QTextEdit:focus {
                 border: 1px solid #007acc;
             }
             QListWidget {
@@ -361,6 +507,62 @@ class SettingsDialog(QDialog):
         # Resize dialog to compact size
         self.adjustSize()
 
+    # === AI Tab Methods ===
+
+    def _on_prompt_changed(self) -> None:
+        """Handle prompt text change with debounce for preview update."""
+        if self._preview_group.isChecked():
+            # Debounce preview updates
+            if self._preview_timer is None:
+                self._preview_timer = QTimer()
+                self._preview_timer.setSingleShot(True)
+                self._preview_timer.timeout.connect(self._update_preview)
+            self._preview_timer.start(300)  # 300ms delay
+
+    def _on_reset_prompt(self) -> None:
+        """Reset prompt to default value."""
+        self._prompt_edit.setPlainText(self.DEFAULT_SYSTEM_PROMPT)
+
+    def _on_preview_toggled(self, checked: bool) -> None:
+        """Handle preview group toggle."""
+        if checked:
+            self._preview_browser.show()
+            self._update_preview()
+        else:
+            self._preview_browser.hide()
+
+    def _update_preview(self) -> None:
+        """Update the preview with sample data."""
+        prompt_text = self._prompt_edit.toPlainText().strip()
+        if not prompt_text:
+            prompt_text = self.DEFAULT_SYSTEM_PROMPT
+
+        # Build preview with sample host data
+        preview = prompt_text
+
+        # Sample connection info
+        preview += "\n\n<b>--- Dados injetados automaticamente ---</b>\n"
+        preview += "\n<b>Informações de conexão:</b>\n"
+        preview += "- Nome: Router Principal\n"
+        preview += "- Endereço: 192.168.1.1\n"
+        preview += "- Porta: 22\n"
+        preview += "- Usuário: admin\n"
+
+        # Sample metadata
+        preview += "\n<b>Metadados do dispositivo:</b>\n"
+        preview += "- Tipo: Roteador\n"
+        preview += "- Fabricante: MikroTik\n"
+        preview += "- Sistema/Versão: RouterOS 7.x\n"
+        preview += "- Tags: prod, core\n"
+
+        # Tool instruction (always added)
+        preview += "\n<b>Instrução de ferramenta:</b>"
+        preview += self.TOOL_INSTRUCTION
+
+        # Convert to HTML for display
+        preview_html = preview.replace("\n", "<br>")
+        self._preview_browser.setHtml(f"<pre style='white-space: pre-wrap;'>{preview_html}</pre>")
+
     def _filter_models(self) -> None:
         """Filter models based on search text."""
         # Only filter if list is visible
@@ -445,6 +647,13 @@ class SettingsDialog(QDialog):
         # Winbox path
         self._winbox_path_edit.setText(dm.settings.winbox_path or "")
 
+        # AI System Prompt
+        custom_prompt = dm.get_ai_system_prompt()
+        if custom_prompt:
+            self._prompt_edit.setPlainText(custom_prompt)
+        else:
+            self._prompt_edit.setPlainText(self.DEFAULT_SYSTEM_PROMPT)
+
     def _toggle_api_key_visibility(self) -> None:
         """Toggle API key visibility."""
         if self._api_key_edit.echoMode() == QLineEdit.EchoMode.Password:
@@ -499,6 +708,14 @@ class SettingsDialog(QDialog):
             dm.set_chat_position(chat_position)
         dm.set_max_conversations_per_host(self._max_conversations_spin.value())
         dm.settings.winbox_path = self._winbox_path_edit.text()
+
+        # AI System Prompt - save empty string if using default
+        prompt_text = self._prompt_edit.toPlainText().strip()
+        if prompt_text == self.DEFAULT_SYSTEM_PROMPT.strip():
+            dm.set_ai_system_prompt("")  # Use default
+        else:
+            dm.set_ai_system_prompt(prompt_text)
+
         dm.save()
 
         QMessageBox.information(
