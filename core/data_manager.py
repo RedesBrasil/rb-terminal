@@ -8,6 +8,7 @@ import base64
 import logging
 import uuid
 import asyncio
+import platform
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
@@ -954,7 +955,8 @@ class DataManager:
                 url = f"https://api.telegram.org/bot{token}/sendDocument"
 
                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                caption = f"RB Terminal Backup - {timestamp}"
+                hostname = platform.node()
+                caption = f"RB Terminal Backup\n📅 {timestamp}\n💻 {hostname}"
 
                 async with httpx.AsyncClient(timeout=30.0) as client:
                     with open(self._data_path, "rb") as f:
