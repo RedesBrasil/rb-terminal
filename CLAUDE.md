@@ -23,6 +23,7 @@ rb-terminal/
 ├── core/
 │   ├── agent.py                # Agente IA com OpenRouter API
 │   ├── ssh_session.py          # Wrapper asyncssh com PTY
+│   ├── sftp_manager.py         # Operações SFTP async (download, upload, list)
 │   ├── data_manager.py         # Gerenciador unificado de dados (singleton)
 │   ├── crypto.py               # Criptografia PBKDF2 + master password
 │   ├── hosts.py                # [LEGADO] Mantido para referência
@@ -31,6 +32,7 @@ rb-terminal/
 ├── gui/
 │   ├── main_window.py          # Janela principal com hosts view + abas + chat
 │   ├── terminal_widget.py      # Widget terminal com emulação ANSI
+│   ├── file_browser.py         # File browser SFTP lateral
 │   ├── tab_session.py          # Dataclass TabSession (estado por aba)
 │   ├── chat_widget.py          # Widget chat IA
 │   ├── hosts_view.py           # Tela principal de hosts (cards/lista/tabela)
@@ -72,6 +74,7 @@ Salvos em `~/.rb-terminal/` (ou `%APPDATA%\.rb-terminal` no Windows):
     "default_model": "google/gemini-2.5-flash",
     "max_agent_iterations": 10,
     "chat_position": "bottom",
+    "sftp_position": "left",
     "available_tags": ["prod", "dev"],
     "hosts_view_mode": "cards",
     "hosts_sort_by": "name",
@@ -147,6 +150,14 @@ Agente IA que executa comandos SSH via OpenRouter API. Fluxo agêntico: Mensagem
 
 Wrapper asyncssh com PTY. `SSHConfig` define host, port, username, password, terminal_type, dimensões. `SSHSession` recebe config, output_callback e disconnect_callback. Features: auto-resposta a terminal queries, detecção de desconexão, autenticação interativa.
 
+### core/sftp_manager.py
+
+`SFTPManager` com operações async: `list_dir()`, `download()`, `upload()`, `download_directory()`, `upload_directory()`, `mkdir()`, `rename()`, `delete()`, `read_text()`, `write_text()`. Usa mesma conexão SSH via `asyncssh.SFTPClient`.
+
+### gui/file_browser.py
+
+`FileBrowser` widget lateral (Ctrl+E). Features: navegação de pastas, upload/download (arquivos e pastas), drag & drop bidirecional, edição remota de arquivos (abre no editor padrão, monitora mudanças, faz upload automático), "follow terminal folder". `RemoteFileEditor` gerencia arquivos em edição.
+
 ### gui/main_window.py
 
 Arquitetura: `QStackedWidget` alterna entre `HostsView` (index 0) e área de terminal (index 1). `_sessions: Dict[str, TabSession]` por tab_id, `_tab_widget: QTabWidget`. Signals thread-safe: `_ssh_output_received(tab_id, data)`, `_unexpected_disconnect(tab_id)`. Fluxo de inicialização: `_handle_startup()` → SetupDialog ou UnlockDialog se necessário → `DataManager.load()`.
@@ -181,3 +192,4 @@ Dialog de configurações com QTabWidget:
 12. **Hosts View:** Modo cards (grid) ou lista (QTableWidget com QHeaderView nativo). Campos visíveis e ordem configuráveis via botão ☰. Colunas redimensionáveis com larguras persistidas. Ordenação por: name, host, port, username, device_type, manufacturer, os_version.
 13. **System Prompt IA:** Estrutura: `[prompt editável] + [dados do host] + [TOOL_INSTRUCTION]`. O usuário edita só a primeira parte. Dados do host (nome, IP, tipo, fabricante, tags, notes) e instrução da ferramenta são injetados automaticamente em `_get_system_prompt()`.
 14. **Usage Tracking:** `UsageStats` em agent.py rastreia tokens e custo. Custo real é buscado via `/generation?id=` após cada chamada. Estatísticas salvas por conversa em `data.json`.
+15. **SFTP:** File browser lateral usa mesma conexão SSH. Posição configurável (left/right/bottom). Download de pasta mostra progresso como "X/Y arquivos (Z%)", arquivos individuais como "X.X/Y.Y KB ou MB (Z%)". Edição remota: arquivo baixado para temp, aberto no editor padrão, monitorado por `QTimer`, upload automático ao salvar.
