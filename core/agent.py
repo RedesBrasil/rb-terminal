@@ -17,11 +17,35 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class UsageStats:
+    """Token usage and cost statistics."""
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    total_cost: float = 0.0
+
+    def add(self, prompt: int, completion: int, cost: float = 0.0) -> None:
+        """Add usage from a single API call."""
+        self.prompt_tokens += prompt
+        self.completion_tokens += completion
+        self.total_tokens += prompt + completion
+        self.total_cost += cost
+
+    def reset(self) -> None:
+        """Reset all statistics."""
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
+        self.total_cost = 0.0
+
+
+@dataclass
 class AgentDeps:
     """Dependencies for the AI agent."""
     execute_command: Callable[[str], Any]  # Async function to execute SSH commands
     on_command_executed: Optional[Callable[[str, str], None]] = None  # Callback(cmd, output)
     on_thinking: Optional[Callable[[str], None]] = None  # Callback for AI thinking
+    on_usage_update: Optional[Callable[[UsageStats], None]] = None  # Callback for usage updates
     # Host connection info
     host_name: Optional[str] = None  # Display name of the host
     host_address: Optional[str] = None  # IP address or hostname
@@ -93,6 +117,7 @@ Regras importantes:
         self.messages: list[dict] = []
         self._cancelled = False
         self._http_client: Optional[httpx.AsyncClient] = None
+        self.usage_stats = UsageStats()
 
     def _get_system_prompt(self) -> str:
         """
@@ -180,6 +205,7 @@ Regras importantes:
         """Reset agent state for new conversation."""
         self.messages = []
         self._cancelled = False
+        self.usage_stats.reset()
 
     async def close(self) -> None:
         """Close HTTP client."""
@@ -219,13 +245,93 @@ Regras importantes:
                 json=payload
             )
             response.raise_for_status()
-            return response.json()
+            result = response.json()
+
+            # Process usage stats
+            await self._process_usage(result)
+
+            return result
         except httpx.HTTPStatusError as e:
             logger.error(f"API error: {e.response.status_code} - {e.response.text}")
             raise RuntimeError(f"API error: {e.response.status_code}")
         except Exception as e:
             logger.error(f"Request failed: {e}")
             raise
+
+    async def _process_usage(self, response: dict) -> None:
+        """
+        Process usage information from API response.
+
+        Args:
+            response: API response containing usage data
+        """
+        usage = response.get("usage", {})
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+
+        # Update stats with tokens first (cost will be fetched async)
+        self.usage_stats.add(prompt_tokens, completion_tokens, 0.0)
+
+        # Notify callback immediately with token counts
+        if self.deps.on_usage_update:
+            self.deps.on_usage_update(self.usage_stats)
+
+        # Fetch cost asynchronously in background
+        gen_id = response.get("id", "")
+        if gen_id:
+            asyncio.create_task(self._fetch_and_update_cost(gen_id))
+
+    async def _fetch_and_update_cost(self, gen_id: str) -> None:
+        """
+        Fetch cost in background and update stats when available.
+
+        Args:
+            gen_id: Generation ID from the API response
+        """
+        # Wait a bit for OpenRouter to index the generation
+        await asyncio.sleep(1.0)
+
+        cost = await self._fetch_generation_cost(gen_id)
+        if cost > 0:
+            # Add only the cost (tokens already counted)
+            self.usage_stats.total_cost += cost
+
+            # Notify callback with updated cost
+            if self.deps.on_usage_update:
+                self.deps.on_usage_update(self.usage_stats)
+
+    async def _fetch_generation_cost(self, gen_id: str, retries: int = 3) -> float:
+        """
+        Fetch the real cost from OpenRouter generation endpoint.
+
+        Args:
+            gen_id: Generation ID from the API response
+            retries: Number of retry attempts (generation may not be available immediately)
+
+        Returns:
+            Cost in USD
+        """
+        for attempt in range(retries):
+            try:
+                # Small delay before fetching - generation needs time to be indexed
+                if attempt > 0:
+                    await asyncio.sleep(0.5 * attempt)
+
+                response = await self.http_client.get(
+                    f"/generation?id={gen_id}"
+                )
+                if response.status_code == 200:
+                    data = response.json().get("data", {})
+                    # Cost is in USD
+                    cost = data.get("total_cost", 0.0)
+                    if cost > 0:
+                        return cost
+                elif response.status_code == 404 and attempt < retries - 1:
+                    # Generation not yet available, retry
+                    continue
+            except Exception as e:
+                logger.debug(f"Failed to fetch generation cost (attempt {attempt + 1}): {e}")
+        return 0.0
 
     async def _execute_tool_call(self, tool_call: dict) -> str:
         """
@@ -380,6 +486,7 @@ def create_agent(
     execute_command: Callable[[str], Any],
     on_command_executed: Optional[Callable[[str, str], None]] = None,
     on_thinking: Optional[Callable[[str], None]] = None,
+    on_usage_update: Optional[Callable[[UsageStats], None]] = None,
     # Host connection info
     host_name: Optional[str] = None,
     host_address: Optional[str] = None,
@@ -401,6 +508,7 @@ def create_agent(
         execute_command: Async function to execute SSH commands
         on_command_executed: Optional callback when command is executed
         on_thinking: Optional callback for agent thinking/status
+        on_usage_update: Optional callback for usage statistics updates
         host_name: Display name of the host
         host_address: IP address or hostname
         host_port: SSH port
@@ -420,6 +528,7 @@ def create_agent(
         execute_command=execute_command,
         on_command_executed=on_command_executed,
         on_thinking=on_thinking,
+        on_usage_update=on_usage_update,
         host_name=host_name,
         host_address=host_address,
         host_port=host_port,

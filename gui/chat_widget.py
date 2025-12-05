@@ -292,6 +292,21 @@ class ChatWidget(QWidget):
 
         layout.addLayout(header_layout)
 
+        # Cost display label
+        self._cost_label = QLabel("")
+        self._cost_label.setStyleSheet("""
+            QLabel {
+                color: #4ec9b0;
+                font-size: 11px;
+                padding: 2px 4px;
+            }
+        """)
+        self._cost_label.setToolTip("Custo da conversa atual")
+        self._cost_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._cost_label.setMinimumWidth(0)
+        self._cost_label.hide()  # Hidden until there's cost data
+        layout.addWidget(self._cost_label)
+
         # Status indicator
         self._status_label = QLabel("Pronto")
         self._status_label.setStyleSheet("""
@@ -301,6 +316,9 @@ class ChatWidget(QWidget):
                 padding: 2px;
             }
         """)
+        # Prevent status label from expanding the chat width
+        self._status_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+        self._status_label.setMinimumWidth(0)
         layout.addWidget(self._status_label)
 
         # Messages area
@@ -489,6 +507,7 @@ class ChatWidget(QWidget):
             status: Status message to display
         """
         self._status_label.setText(status)
+        self._status_label.setToolTip(status if len(status) > 50 else "")
 
     def set_processing(self, processing: bool) -> None:
         """
@@ -516,6 +535,9 @@ class ChatWidget(QWidget):
         """Clear all messages from chat."""
         # Clear tracked messages
         self._display_messages.clear()
+
+        # Reset cost display
+        self.reset_cost()
 
         # Remove all widgets except the stretch
         while self._messages_layout.count() > 1:
@@ -608,3 +630,30 @@ class ChatWidget(QWidget):
             List of (text, is_user) tuples
         """
         return self._display_messages.copy()
+
+    def update_cost(self, total_cost: float, prompt_tokens: int, completion_tokens: int) -> None:
+        """
+        Update the cost display.
+
+        Args:
+            total_cost: Total cost in USD
+            prompt_tokens: Number of prompt tokens used
+            completion_tokens: Number of completion tokens used
+        """
+        if total_cost > 0 or prompt_tokens > 0 or completion_tokens > 0:
+            total_tokens = prompt_tokens + completion_tokens
+            if total_cost >= 0.01:
+                cost_text = f"${total_cost:.4f}"
+            elif total_cost > 0:
+                cost_text = f"${total_cost:.6f}"
+            else:
+                cost_text = "$0.00"
+            self._cost_label.setText(f"💰 {cost_text} | {total_tokens:,} tokens")
+            self._cost_label.show()
+        else:
+            self._cost_label.hide()
+
+    def reset_cost(self) -> None:
+        """Reset the cost display for a new conversation."""
+        self._cost_label.setText("")
+        self._cost_label.hide()

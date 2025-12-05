@@ -215,6 +215,10 @@ class Conversation:
     messages: List[ChatMessage] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now().isoformat())
     updated_at: str = field(default_factory=lambda: datetime.now().isoformat())
+    # Usage statistics
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_cost: float = 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -223,7 +227,10 @@ class Conversation:
             "title": self.title,
             "messages": [m.to_dict() for m in self.messages],
             "created_at": self.created_at,
-            "updated_at": self.updated_at
+            "updated_at": self.updated_at,
+            "prompt_tokens": self.prompt_tokens,
+            "completion_tokens": self.completion_tokens,
+            "total_cost": self.total_cost
         }
 
     @classmethod
@@ -234,7 +241,10 @@ class Conversation:
             title=data.get("title", ""),
             messages=[ChatMessage.from_dict(m) for m in data.get("messages", [])],
             created_at=data.get("created_at", datetime.now().isoformat()),
-            updated_at=data.get("updated_at", datetime.now().isoformat())
+            updated_at=data.get("updated_at", datetime.now().isoformat()),
+            prompt_tokens=data.get("prompt_tokens", 0),
+            completion_tokens=data.get("completion_tokens", 0),
+            total_cost=data.get("total_cost", 0.0)
         )
 
 
@@ -911,15 +921,26 @@ class DataManager:
         self,
         conv_id: str,
         messages: List[ChatMessage],
-        title: Optional[str] = None
+        title: Optional[str] = None,
+        prompt_tokens: Optional[int] = None,
+        completion_tokens: Optional[int] = None,
+        total_cost: Optional[float] = None
     ) -> Optional[Conversation]:
-        """Update conversation messages and timestamp."""
+        """Update conversation messages, timestamp, and usage stats."""
         conv = self.get_conversation_by_id(conv_id)
         if not conv:
             return None
 
         conv.messages = messages
         conv.updated_at = datetime.now().isoformat()
+
+        # Update usage stats if provided
+        if prompt_tokens is not None:
+            conv.prompt_tokens = prompt_tokens
+        if completion_tokens is not None:
+            conv.completion_tokens = completion_tokens
+        if total_cost is not None:
+            conv.total_cost = total_cost
 
         # Auto-generate title from first user message if not set
         if title:

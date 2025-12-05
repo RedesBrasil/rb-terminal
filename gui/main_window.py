@@ -21,7 +21,7 @@ from PySide6.QtCore import Qt, Slot, Signal, QTimer, QSize
 from PySide6.QtGui import QCloseEvent, QAction, QColor, QPainter, QPixmap, QIcon
 
 from core.ssh_session import SSHSession, SSHConfig
-from core.agent import create_agent, SSHAgent
+from core.agent import create_agent, SSHAgent, UsageStats
 from core.data_manager import get_data_manager, DataManager, ChatMessage
 from gui.terminal_widget import TerminalWidget
 from gui.chat_widget import ChatWidget
@@ -1136,6 +1136,13 @@ class MainWindow(QMainWindow):
         def on_thinking(status: str) -> None:
             self._chat.set_status(status)
 
+        def on_usage_update(stats: UsageStats) -> None:
+            self._chat.update_cost(
+                stats.total_cost,
+                stats.prompt_tokens,
+                stats.completion_tokens
+            )
+
         # Get connection info from config
         host_address = session.config.host if session.config else None
         host_port = session.config.port if session.config else None
@@ -1145,6 +1152,7 @@ class MainWindow(QMainWindow):
             execute_command=execute_command,
             on_command_executed=on_command_executed,
             on_thinking=on_thinking,
+            on_usage_update=on_usage_update,
             # Host connection info
             host_name=session.host_name,
             host_address=host_address,
@@ -1581,6 +1589,26 @@ class MainWindow(QMainWindow):
                     }
                     for m in conv.messages
                 ]
+                # Restore usage stats
+                session.agent.usage_stats.prompt_tokens = conv.prompt_tokens
+                session.agent.usage_stats.completion_tokens = conv.completion_tokens
+                session.agent.usage_stats.total_tokens = conv.prompt_tokens + conv.completion_tokens
+                session.agent.usage_stats.total_cost = conv.total_cost
+                # Update cost display
+                self._chat.update_cost(
+                    conv.total_cost,
+                    conv.prompt_tokens,
+                    conv.completion_tokens
+                )
+        elif session.agent:
+            # No conversation, show current session stats if any
+            stats = session.agent.usage_stats
+            if stats.total_tokens > 0:
+                self._chat.update_cost(
+                    stats.total_cost,
+                    stats.prompt_tokens,
+                    stats.completion_tokens
+                )
 
     def _save_chat_to_conversation(self, session: TabSession) -> None:
         """Save current chat to persistent conversation."""
@@ -1601,17 +1629,32 @@ class MainWindow(QMainWindow):
         if not chat_messages:
             return
 
+        # Get usage stats from agent
+        usage = session.agent.usage_stats
+        prompt_tokens = usage.prompt_tokens
+        completion_tokens = usage.completion_tokens
+        total_cost = usage.total_cost
+
         if session.chat_state.conversation_id:
             # Update existing conversation
             self._data_manager.update_conversation(
                 session.chat_state.conversation_id,
-                chat_messages
+                chat_messages,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_cost=total_cost
             )
         else:
             # Create new conversation
             conv = self._data_manager.create_conversation(session.host_id)
             session.chat_state.conversation_id = conv.id
-            self._data_manager.update_conversation(conv.id, chat_messages)
+            self._data_manager.update_conversation(
+                conv.id,
+                chat_messages,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_cost=total_cost
+            )
 
         # Refresh conversation list in UI
         convs = self._data_manager.get_conversations_for_host(session.host_id)
@@ -1661,6 +1704,18 @@ class MainWindow(QMainWindow):
                         }
                         for m in conv.messages
                     ]
+                    # Restore usage stats from saved conversation
+                    session.agent.usage_stats.prompt_tokens = conv.prompt_tokens
+                    session.agent.usage_stats.completion_tokens = conv.completion_tokens
+                    session.agent.usage_stats.total_tokens = conv.prompt_tokens + conv.completion_tokens
+                    session.agent.usage_stats.total_cost = conv.total_cost
+
+                # Update cost display
+                self._chat.update_cost(
+                    conv.total_cost,
+                    conv.prompt_tokens,
+                    conv.completion_tokens
+                )
         else:
             # New conversation
             session.chat_state.clear()
