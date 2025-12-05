@@ -2,7 +2,7 @@
 Hosts view widget for displaying all hosts in card or list format.
 """
 
-from typing import Optional, Callable
+from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QComboBox,
     QPushButton, QScrollArea, QFrame, QGridLayout, QLabel,
@@ -12,7 +12,8 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon
 
 from core.data_manager import DataManager, Host
-from gui.host_card import HostCard, HostListItem, AddHostCard
+from gui.host_card import HostCard, HostListItem, AddHostCard, HostTableHeader, HostsTableWidget
+from gui.fields_config_dialog import FieldsConfigDialog
 
 
 class FlowLayout(QGridLayout):
@@ -47,6 +48,9 @@ class HostsView(QWidget):
         self._selected_functions: list[str] = []
         self._selected_groups: list[str] = []
         self._host_widgets: list = []
+        self._list_items: list = []  # For column resize updates
+        self._table_header = None
+        self._table_widget: Optional[HostsTableWidget] = None
 
         self._setup_ui()
         self._apply_style()
@@ -89,6 +93,7 @@ class HostsView(QWidget):
         """)
 
         self._hosts_container = QWidget()
+        self._hosts_container.setStyleSheet("background-color: #1e1e1e;")
         self._hosts_layout = FlowLayout(self._hosts_container)
         self._scroll_area.setWidget(self._hosts_container)
 
@@ -152,12 +157,15 @@ class HostsView(QWidget):
         # Sort dropdown
         self._sort_combo = QComboBox()
         self._sort_combo.addItem("Nome", "name")
-        self._sort_combo.addItem("IP", "host")
+        self._sort_combo.addItem("IP/Host", "host")
+        self._sort_combo.addItem("Porta", "port")
+        self._sort_combo.addItem("Usuario", "username")
         self._sort_combo.addItem("Tipo", "device_type")
         self._sort_combo.addItem("Fabricante", "manufacturer")
-        self._sort_combo.setCurrentIndex(
-            {"name": 0, "host": 1, "device_type": 2, "manufacturer": 3}.get(self._sort_by, 0)
-        )
+        self._sort_combo.addItem("OS/Versao", "os_version")
+        sort_index_map = {"name": 0, "host": 1, "port": 2, "username": 3,
+                         "device_type": 4, "manufacturer": 5, "os_version": 6}
+        self._sort_combo.setCurrentIndex(sort_index_map.get(self._sort_by, 0))
         self._sort_combo.currentIndexChanged.connect(self._on_sort_changed)
         self._sort_combo.setStyleSheet("""
             QComboBox {
@@ -207,6 +215,14 @@ class HostsView(QWidget):
         """)
         quick_btn.clicked.connect(self.quick_connect_requested.emit)
         layout.addWidget(quick_btn)
+
+        # Fields configuration button
+        self._fields_btn = QPushButton()
+        self._fields_btn.setToolTip("Configurar campos visiveis")
+        self._fields_btn.setText("☰")
+        self._fields_btn.clicked.connect(self._show_fields_config)
+        self._fields_btn.setStyleSheet(self._get_toggle_btn_style())
+        layout.addWidget(self._fields_btn)
 
         # View mode toggle buttons
         self._cards_btn = QPushButton()
@@ -472,6 +488,17 @@ class HostsView(QWidget):
         self._list_btn.setChecked(mode == "list")
         self.refresh()
 
+    def _show_fields_config(self):
+        """Show the fields configuration dialog."""
+        dialog = FieldsConfigDialog(self._data_manager, self)
+        if dialog.exec():
+            self.refresh()
+
+    def _on_column_resized(self, field: str, width: int):
+        """Handle column resize from table widget."""
+        # Save to settings
+        self._data_manager.set_list_column_width(field, width)
+
     def _filter_hosts(self, hosts: list[Host]) -> list[Host]:
         """Filter hosts based on search text and selected filters."""
         filtered = []
@@ -528,10 +555,16 @@ class HostsView(QWidget):
             return sorted(hosts, key=lambda h: h.name.lower())
         elif self._sort_by == "host":
             return sorted(hosts, key=lambda h: h.host)
+        elif self._sort_by == "port":
+            return sorted(hosts, key=lambda h: h.port)
+        elif self._sort_by == "username":
+            return sorted(hosts, key=lambda h: (h.username or "zzz").lower())
         elif self._sort_by == "device_type":
             return sorted(hosts, key=lambda h: (h.device_type or "zzz").lower())
         elif self._sort_by == "manufacturer":
             return sorted(hosts, key=lambda h: (h.manufacturer or "zzz").lower())
+        elif self._sort_by == "os_version":
+            return sorted(hosts, key=lambda h: (h.os_version or "zzz").lower())
         return hosts
 
     def refresh(self):
@@ -559,6 +592,9 @@ class HostsView(QWidget):
 
     def _display_as_cards(self, hosts: list[Host]):
         """Display hosts as cards in a grid."""
+        # Get visible fields for cards
+        visible_fields = self._data_manager.get_card_visible_fields()
+
         # Calculate columns based on width
         cols = max(1, (self.width() - 32) // 240)
         if cols < 1:
@@ -568,7 +604,7 @@ class HostsView(QWidget):
         col = 0
 
         for host in hosts:
-            card = HostCard(host)
+            card = HostCard(host, visible_fields=visible_fields)
             card.connect_requested.connect(self.connect_requested.emit)
             card.edit_requested.connect(self.edit_requested.emit)
             card.delete_requested.connect(self.delete_requested.emit)
@@ -592,22 +628,33 @@ class HostsView(QWidget):
         self._hosts_layout.setRowStretch(row + 1, 1)
 
     def _display_as_list(self, hosts: list[Host]):
-        """Display hosts as a list."""
-        # Reset to vertical layout for list view
+        """Display hosts as a table using QTableWidget."""
+        # Get visible fields and custom widths for list view
+        visible_fields = self._data_manager.get_list_visible_fields()
+        column_widths = self._data_manager.get_list_column_widths()
+
+        # Reset layout for table view
         self._hosts_layout.setSpacing(0)
         self._hosts_layout.setContentsMargins(0, 0, 0, 0)
+        self._hosts_layout.setColumnStretch(0, 1)
 
-        row = 0
-        for host in hosts:
-            item = HostListItem(host)
-            item.connect_requested.connect(self.connect_requested.emit)
-            item.edit_requested.connect(self.edit_requested.emit)
-            item.delete_requested.connect(self.delete_requested.emit)
-            item.winbox_requested.connect(self.winbox_requested.emit)
-            item.web_access_requested.connect(self.web_access_requested.emit)
-            self._hosts_layout.addWidget(item, row, 0, 1, -1)
-            self._host_widgets.append(item)
-            row += 1
+        # Create table widget with native QHeaderView resizing
+        self._table_widget = HostsTableWidget(
+            visible_fields=visible_fields,
+            column_widths=column_widths
+        )
+        self._table_widget.set_hosts(hosts)
+
+        # Connect signals
+        self._table_widget.connect_requested.connect(self.connect_requested.emit)
+        self._table_widget.edit_requested.connect(self.edit_requested.emit)
+        self._table_widget.delete_requested.connect(self.delete_requested.emit)
+        self._table_widget.winbox_requested.connect(self.winbox_requested.emit)
+        self._table_widget.web_access_requested.connect(self.web_access_requested.emit)
+        self._table_widget.column_width_changed.connect(self._on_column_resized)
+
+        self._hosts_layout.addWidget(self._table_widget, 0, 0, 1, -1)
+        self._host_widgets.append(self._table_widget)
 
         # Add "Add Host" button at the end
         add_btn = QPushButton("+ Adicionar Host")
@@ -626,11 +673,11 @@ class HostsView(QWidget):
             }
         """)
         add_btn.clicked.connect(self.add_requested.emit)
-        self._hosts_layout.addWidget(add_btn, row, 0, 1, -1)
+        self._hosts_layout.addWidget(add_btn, 1, 0, 1, -1)
         self._host_widgets.append(add_btn)
 
         # Add stretch
-        self._hosts_layout.setRowStretch(row + 1, 1)
+        self._hosts_layout.setRowStretch(2, 1)
 
     def resizeEvent(self, event):
         """Handle resize to recalculate grid columns."""

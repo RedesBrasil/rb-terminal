@@ -59,6 +59,11 @@ class Settings:
     available_functions: list = field(default_factory=list)
     available_groups: list = field(default_factory=list)
     winbox_path: str = ""  # Caminho completo do executável Winbox
+    # Campos visíveis na view de hosts (ordem define posição)
+    card_visible_fields: list = field(default_factory=lambda: ["name", "host", "tags", "device_type"])
+    list_visible_fields: list = field(default_factory=lambda: ["name", "host", "port", "username", "tags", "device_type", "manufacturer"])
+    # Larguras customizadas das colunas na lista (field_id: width)
+    list_column_widths: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -80,6 +85,9 @@ class Settings:
             available_functions=data.get("available_functions", []),
             available_groups=data.get("available_groups", []),
             winbox_path=data.get("winbox_path", ""),
+            card_visible_fields=data.get("card_visible_fields", ["name", "host", "tags", "device_type"]),
+            list_visible_fields=data.get("list_visible_fields", ["name", "host", "port", "username", "tags", "device_type", "manufacturer"]),
+            list_column_widths=data.get("list_column_widths", {}),
         )
 
 
@@ -777,12 +785,79 @@ class DataManager:
 
     def get_hosts_sort_by(self) -> str:
         sort_by = self._settings.hosts_sort_by
-        return sort_by if sort_by in {"name", "host", "device_type"} else "name"
+        valid_sorts = {"name", "host", "port", "username", "device_type", "manufacturer", "os_version"}
+        return sort_by if sort_by in valid_sorts else "name"
 
     def set_hosts_sort_by(self, sort_by: str) -> None:
-        if sort_by in {"name", "host", "device_type"}:
+        valid_sorts = {"name", "host", "port", "username", "device_type", "manufacturer", "os_version"}
+        if sort_by in valid_sorts:
             self._settings.hosts_sort_by = sort_by
             self._save()
+
+    # === Visible fields settings ===
+
+    # Campos válidos para visibilidade
+    VALID_FIELDS = {"name", "host", "port", "username", "tags", "device_type",
+                    "manufacturer", "os_version", "functions", "groups"}
+
+    def get_card_visible_fields(self) -> List[str]:
+        """Get visible fields for card view (order matters)."""
+        fields = self._settings.card_visible_fields
+        # Filtrar apenas campos válidos e garantir que 'name' está sempre presente
+        valid = [f for f in fields if f in self.VALID_FIELDS]
+        if "name" not in valid:
+            valid = ["name"] + valid
+        return valid if valid else ["name", "host", "tags", "device_type"]
+
+    def set_card_visible_fields(self, fields: List[str]) -> None:
+        """Set visible fields for card view (order matters)."""
+        # Filtrar campos válidos
+        valid = [f for f in fields if f in self.VALID_FIELDS]
+        # Garantir que 'name' está sempre primeiro
+        if "name" not in valid:
+            valid = ["name"] + valid
+        elif valid[0] != "name":
+            valid.remove("name")
+            valid = ["name"] + valid
+        self._settings.card_visible_fields = valid
+        self._save()
+
+    def get_list_visible_fields(self) -> List[str]:
+        """Get visible fields for list/table view (order matters)."""
+        fields = self._settings.list_visible_fields
+        # Filtrar apenas campos válidos e garantir que 'name' está sempre presente
+        valid = [f for f in fields if f in self.VALID_FIELDS]
+        if "name" not in valid:
+            valid = ["name"] + valid
+        return valid if valid else ["name", "host", "port", "username", "tags", "device_type", "manufacturer"]
+
+    def set_list_visible_fields(self, fields: List[str]) -> None:
+        """Set visible fields for list/table view (order matters)."""
+        # Filtrar campos válidos
+        valid = [f for f in fields if f in self.VALID_FIELDS]
+        # Garantir que 'name' está sempre primeiro
+        if "name" not in valid:
+            valid = ["name"] + valid
+        elif valid[0] != "name":
+            valid.remove("name")
+            valid = ["name"] + valid
+        self._settings.list_visible_fields = valid
+        self._save()
+
+    def get_list_column_widths(self) -> dict:
+        """Get custom column widths for list view."""
+        return dict(self._settings.list_column_widths)
+
+    def set_list_column_width(self, field: str, width: int) -> None:
+        """Set width for a specific column."""
+        if field in self.VALID_FIELDS and width > 0:
+            self._settings.list_column_widths[field] = width
+            self._save()
+
+    def reset_list_column_widths(self) -> None:
+        """Reset all column widths to defaults."""
+        self._settings.list_column_widths = {}
+        self._save()
 
     # === Conversation settings ===
 
