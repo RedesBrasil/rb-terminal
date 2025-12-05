@@ -941,10 +941,39 @@ class FileBrowser(QWidget):
         self.download_requested.emit(files)
 
     def _on_upload_click(self) -> None:
-        """Handle upload button click."""
+        """Handle upload button click - show menu with file/folder options."""
         if not self._sftp:
             return
 
+        # Show menu with options
+        menu = QMenu(self)
+        menu.setStyleSheet("""
+            QMenu {
+                background-color: #2d2d2d;
+                border: 1px solid #555555;
+                border-radius: 4px;
+                padding: 4px;
+            }
+            QMenu::item {
+                padding: 6px 20px;
+                border-radius: 3px;
+            }
+            QMenu::item:selected {
+                background-color: #094771;
+            }
+        """)
+
+        files_action = menu.addAction("\U0001F4C4 Upload de arquivos...")
+        files_action.triggered.connect(self._on_upload_files)
+
+        folder_action = menu.addAction("\U0001F4C1 Upload de pasta...")
+        folder_action.triggered.connect(self._on_upload_folder)
+
+        # Show menu below the button
+        menu.exec(self._upload_btn.mapToGlobal(self._upload_btn.rect().bottomLeft()))
+
+    def _on_upload_files(self) -> None:
+        """Handle upload files selection."""
         files, _ = QFileDialog.getOpenFileNames(
             self,
             "Selecionar arquivos para upload",
@@ -954,6 +983,17 @@ class FileBrowser(QWidget):
 
         if files:
             self.upload_requested.emit(files, self._current_path)
+
+    def _on_upload_folder(self) -> None:
+        """Handle upload folder selection."""
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Selecionar pasta para upload",
+            ""
+        )
+
+        if folder:
+            self.upload_requested.emit([folder], self._current_path)
 
     def _on_new_folder(self) -> None:
         """Handle new folder button click."""
@@ -1077,8 +1117,13 @@ class FileBrowser(QWidget):
         # Always show these options
         menu.addSeparator()
 
-        upload_action = menu.addAction("Upload aqui...")
-        upload_action.triggered.connect(self._on_upload_click)
+        upload_files_action = menu.addAction("\U0001F4C4 Upload de arquivos...")
+        upload_files_action.triggered.connect(self._on_upload_files)
+
+        upload_folder_action = menu.addAction("\U0001F4C1 Upload de pasta...")
+        upload_folder_action.triggered.connect(self._on_upload_folder)
+
+        menu.addSeparator()
 
         new_folder_action = menu.addAction("Nova pasta")
         new_folder_action.triggered.connect(self._on_new_folder)
@@ -1210,7 +1255,7 @@ class FileBrowser(QWidget):
         self,
         local_files: List[str],
         remote_dir: str,
-        progress_callback: Optional[Callable[[str, int, int], None]] = None
+        progress_callback: Optional[Callable[[str], None]] = None
     ) -> int:
         """
         Upload files and directories to remote directory.
@@ -1218,7 +1263,7 @@ class FileBrowser(QWidget):
         Args:
             local_files: List of local file/directory paths
             remote_dir: Remote directory path
-            progress_callback: Optional callback(filename, bytes_done, total_bytes)
+            progress_callback: Optional callback(message) for formatted progress
 
         Returns:
             Number of files uploaded successfully
@@ -1226,32 +1271,60 @@ class FileBrowser(QWidget):
         if not self._sftp:
             return 0
 
+        def format_bytes_progress(name: str, done: int, total: int) -> str:
+            """Format progress as KB/MB with percentage."""
+            if total <= 0:
+                return f"Enviando {name}..."
+            percent = (done / total) * 100
+            if total < 1024 * 1024:
+                done_kb = done / 1024
+                total_kb = total / 1024
+                return f"Enviando {name}: {done_kb:.1f}/{total_kb:.1f} KB ({percent:.0f}%)"
+            else:
+                done_mb = done / (1024 * 1024)
+                total_mb = total / (1024 * 1024)
+                return f"Enviando {name}: {done_mb:.2f}/{total_mb:.2f} MB ({percent:.0f}%)"
+
+        def format_folder_progress(name: str, files_done: int, total_files: int) -> str:
+            """Format folder progress as file count with percentage."""
+            if total_files <= 0:
+                return f"Enviando {name}..."
+            percent = (files_done / total_files) * 100
+            return f"Enviando {name}: {files_done}/{total_files} arquivos ({percent:.0f}%)"
+
         uploaded = 0
         for local_path in local_files:
             try:
                 local_file = Path(local_path)
 
                 if local_file.is_dir():
-                    # Upload directory recursively
+                    # Upload directory recursively with folder progress
                     self._set_status(f"Enviando pasta: {local_file.name}...")
+
+                    def make_folder_callback(folder_name):
+                        def callback(name, done, total):
+                            if progress_callback:
+                                progress_callback(format_folder_progress(folder_name, done, total))
+                        return callback
+
                     count = await self._sftp.upload_directory(
                         local_path,
                         remote_dir,
-                        progress_callback
+                        make_folder_callback(local_file.name)
                     )
                     uploaded += count
                     self._set_status(f"Pasta enviada: {local_file.name} ({count} arquivos)")
                 else:
-                    # Upload single file
+                    # Upload single file with bytes progress
                     remote_path = str(PurePosixPath(remote_dir) / local_file.name)
 
-                    def make_progress(name):
-                        def progress(done, total):
+                    def make_file_callback(name):
+                        def callback(done, total):
                             if progress_callback:
-                                progress_callback(name, done, total)
-                        return progress
+                                progress_callback(format_bytes_progress(name, done, total))
+                        return callback
 
-                    await self._sftp.upload(local_path, remote_path, make_progress(local_file.name))
+                    await self._sftp.upload(local_path, remote_path, make_file_callback(local_file.name))
                     uploaded += 1
                     self._set_status(f"Upload: {local_file.name}")
 
@@ -1271,7 +1344,7 @@ class FileBrowser(QWidget):
         self,
         files: List[FileInfo],
         local_dir: str,
-        progress_callback: Optional[Callable[[str, int, int], None]] = None
+        progress_callback: Optional[Callable[[str], None]] = None
     ) -> int:
         """
         Download files and directories to local directory.
@@ -1279,7 +1352,7 @@ class FileBrowser(QWidget):
         Args:
             files: List of FileInfo to download
             local_dir: Local directory path
-            progress_callback: Optional callback(filename, bytes_done, total_bytes)
+            progress_callback: Optional callback(message) for formatted progress
 
         Returns:
             Number of files downloaded successfully
@@ -1287,30 +1360,58 @@ class FileBrowser(QWidget):
         if not self._sftp:
             return 0
 
+        def format_bytes_progress(name: str, done: int, total: int) -> str:
+            """Format progress as KB/MB with percentage."""
+            if total <= 0:
+                return f"Baixando {name}..."
+            percent = (done / total) * 100
+            if total < 1024 * 1024:
+                done_kb = done / 1024
+                total_kb = total / 1024
+                return f"Baixando {name}: {done_kb:.1f}/{total_kb:.1f} KB ({percent:.0f}%)"
+            else:
+                done_mb = done / (1024 * 1024)
+                total_mb = total / (1024 * 1024)
+                return f"Baixando {name}: {done_mb:.2f}/{total_mb:.2f} MB ({percent:.0f}%)"
+
+        def format_folder_progress(name: str, files_done: int, total_files: int) -> str:
+            """Format folder progress as file count with percentage."""
+            if total_files <= 0:
+                return f"Baixando {name}..."
+            percent = (files_done / total_files) * 100
+            return f"Baixando {name}: {files_done}/{total_files} arquivos ({percent:.0f}%)"
+
         downloaded = 0
         for file_info in files:
             try:
                 if file_info.is_dir:
-                    # Download directory recursively
+                    # Download directory recursively with folder progress
                     self._set_status(f"Baixando pasta: {file_info.name}...")
+
+                    def make_folder_callback(folder_name):
+                        def callback(name, done, total):
+                            if progress_callback:
+                                progress_callback(format_folder_progress(folder_name, done, total))
+                        return callback
+
                     count = await self._sftp.download_directory(
                         file_info.path,
                         local_dir,
-                        progress_callback
+                        make_folder_callback(file_info.name)
                     )
                     downloaded += count
                     self._set_status(f"Pasta baixada: {file_info.name} ({count} arquivos)")
                 else:
-                    # Download single file
+                    # Download single file with bytes progress
                     local_path = os.path.join(local_dir, file_info.name)
 
-                    def make_progress(name):
-                        def progress(done, total):
+                    def make_file_callback(name):
+                        def callback(done, total):
                             if progress_callback:
-                                progress_callback(name, done, total)
-                        return progress
+                                progress_callback(format_bytes_progress(name, done, total))
+                        return callback
 
-                    await self._sftp.download(file_info.path, local_path, make_progress(file_info.name))
+                    await self._sftp.download(file_info.path, local_path, make_file_callback(file_info.name))
                     downloaded += 1
                     self._set_status(f"Download: {file_info.name}")
 

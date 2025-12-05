@@ -38,25 +38,6 @@ from core.resources import get_resource_path
 logger = logging.getLogger(__name__)
 
 
-def format_transfer_progress(name: str, done: int, total: int, action: str = "Baixando") -> str:
-    """Format transfer progress with KB/MB and percentage."""
-    if total <= 0:
-        return f"{action} {name}..."
-
-    # Calculate percentage
-    percent = (done / total) * 100
-
-    # Format size based on magnitude
-    if total < 1024 * 1024:  # Less than 1MB, show in KB
-        done_kb = done / 1024
-        total_kb = total / 1024
-        return f"{action} {name}: {done_kb:.1f}/{total_kb:.1f} KB ({percent:.0f}%)"
-    else:  # 1MB or more, show in MB
-        done_mb = done / (1024 * 1024)
-        total_mb = total / (1024 * 1024)
-        return f"{action} {name}: {done_mb:.2f}/{total_mb:.2f} MB ({percent:.0f}%)"
-
-
 class MainWindow(QMainWindow):
     """Main application window with hosts view, terminal tabs, and chat."""
 
@@ -1098,12 +1079,11 @@ class MainWindow(QMainWindow):
         # Use Downloads folder as default
         downloads_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
 
-        # Ask for destination folder
+        # Ask for destination folder (without ShowDirsOnly for better Windows compatibility)
         dest_dir = QFileDialog.getExistingDirectory(
             self,
             "Selecionar pasta de destino",
-            downloads_dir,
-            QFileDialog.Option.ShowDirsOnly
+            downloads_dir
         )
 
         if not dest_dir:
@@ -1116,9 +1096,7 @@ class MainWindow(QMainWindow):
         downloaded = await self._sftp_browser.download_files(
             files,
             dest_dir,
-            progress_callback=lambda name, done, total: self._status_bar.showMessage(
-                format_transfer_progress(name, done, total, "Baixando")
-            )
+            progress_callback=lambda msg: self._status_bar.showMessage(msg)
         )
         if downloaded > 0:
             self._status_bar.showMessage(f"{downloaded} arquivo(s) baixado(s)", 3000)
@@ -1133,9 +1111,7 @@ class MainWindow(QMainWindow):
         uploaded = await self._sftp_browser.upload_files(
             local_files,
             remote_dir,
-            progress_callback=lambda name, done, total: self._status_bar.showMessage(
-                format_transfer_progress(name, done, total, "Enviando")
-            )
+            progress_callback=lambda msg: self._status_bar.showMessage(msg)
         )
         if uploaded > 0:
             self._status_bar.showMessage(f"{uploaded} arquivo(s) enviado(s)", 3000)
