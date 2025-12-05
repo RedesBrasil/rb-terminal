@@ -112,12 +112,21 @@ Regras importantes:
         """
         self.deps = deps
         self._data_manager = get_data_manager()
-        self.api_key = self._data_manager.get_api_key()
-        self.model = self._data_manager.get_model()
         self.messages: list[dict] = []
         self._cancelled = False
         self._http_client: Optional[httpx.AsyncClient] = None
+        self._cached_api_key: Optional[str] = None  # Track API key for client invalidation
         self.usage_stats = UsageStats()
+
+    @property
+    def api_key(self) -> str:
+        """Get current API key from settings (dynamic)."""
+        return self._data_manager.get_api_key()
+
+    @property
+    def model(self) -> str:
+        """Get current model from settings (dynamic)."""
+        return self._data_manager.get_model()
 
     def _get_system_prompt(self) -> str:
         """
@@ -182,12 +191,24 @@ Regras importantes:
 
     @property
     def http_client(self) -> httpx.AsyncClient:
-        """Get or create HTTP client."""
-        if self._http_client is None or self._http_client.is_closed:
+        """Get or create HTTP client. Recreates if API key changed."""
+        current_api_key = self.api_key
+
+        # Recreate client if API key changed or client doesn't exist
+        if (self._http_client is None or
+            self._http_client.is_closed or
+            self._cached_api_key != current_api_key):
+
+            # Close existing client if open
+            if self._http_client and not self._http_client.is_closed:
+                # Schedule close in background to avoid blocking
+                asyncio.create_task(self._http_client.aclose())
+
+            self._cached_api_key = current_api_key
             self._http_client = httpx.AsyncClient(
                 base_url="https://openrouter.ai/api/v1",
                 headers={
-                    "Authorization": f"Bearer {self.api_key}",
+                    "Authorization": f"Bearer {current_api_key}",
                     "Content-Type": "application/json",
                     "HTTP-Referer": "https://github.com/rb-terminal",
                     "X-Title": "RB Terminal"
