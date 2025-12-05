@@ -222,6 +222,19 @@ class ChatWidget(QWidget):
         """)
         header_layout.addWidget(header)
 
+        # Account balance label (subtle, right-aligned in header)
+        self._balance_label = QLabel("")
+        self._balance_label.setStyleSheet("""
+            QLabel {
+                color: #6a9955;
+                font-size: 10px;
+                padding: 2px 4px;
+            }
+        """)
+        self._balance_label.setToolTip("Saldo OpenRouter")
+        self._balance_label.hide()
+        header_layout.addWidget(self._balance_label)
+
         # Conversation selector combobox
         self._conversation_combo = ConversationComboBox()
         self._conversation_combo.setToolTip("Clique para ver conversas anteriores")
@@ -657,3 +670,45 @@ class ChatWidget(QWidget):
         """Reset the cost display for a new conversation."""
         self._cost_label.setText("")
         self._cost_label.hide()
+
+    def update_balance(self, balance: Optional[float]) -> None:
+        """
+        Update the account balance display.
+
+        Args:
+            balance: Balance in USD, or None to hide
+        """
+        if balance is not None:
+            if balance < 0:
+                # Negative balance - show in red
+                self._balance_label.setStyleSheet("""
+                    QLabel {
+                        color: #f14c4c;
+                        font-size: 10px;
+                        padding: 2px 4px;
+                    }
+                """)
+                self._balance_label.setText(f"💳 ${balance:.2f}")
+            elif balance < 1.0:
+                # Low balance - show in yellow
+                self._balance_label.setStyleSheet("""
+                    QLabel {
+                        color: #cca700;
+                        font-size: 10px;
+                        padding: 2px 4px;
+                    }
+                """)
+                self._balance_label.setText(f"💳 ${balance:.2f}")
+            else:
+                # Normal balance - show in green
+                self._balance_label.setStyleSheet("""
+                    QLabel {
+                        color: #6a9955;
+                        font-size: 10px;
+                        padding: 2px 4px;
+                    }
+                """)
+                self._balance_label.setText(f"💳 ${balance:.2f}")
+            self._balance_label.show()
+        else:
+            self._balance_label.hide()

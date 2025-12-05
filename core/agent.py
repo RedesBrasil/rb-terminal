@@ -234,6 +234,25 @@ Regras importantes:
             await self._http_client.aclose()
             self._http_client = None
 
+    async def get_account_balance(self) -> Optional[float]:
+        """
+        Fetch account balance/credits from OpenRouter.
+
+        Returns:
+            Balance in USD, or None if failed
+        """
+        try:
+            response = await self.http_client.get("/credits")
+            if response.status_code == 200:
+                data = response.json().get("data", {})
+                total_credits = data.get("total_credits", 0)
+                total_usage = data.get("total_usage", 0)
+                # Balance = credits purchased - credits used
+                return float(total_credits) - float(total_usage)
+        except Exception as e:
+            logger.debug(f"Failed to fetch account balance: {e}")
+        return None
+
     async def _call_api(self, messages: list[dict], use_tools: bool = True) -> dict:
         """
         Call OpenRouter API.

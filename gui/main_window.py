@@ -1536,6 +1536,9 @@ class MainWindow(QMainWindow):
                 # Save to persistent storage (only for saved hosts)
                 self._save_chat_to_conversation(session)
 
+                # Update account balance after response
+                await self._update_account_balance(session)
+
         except asyncio.CancelledError:
             self._chat.add_message("Operacao cancelada.", is_user=False)
         except Exception as e:
@@ -1609,6 +1612,20 @@ class MainWindow(QMainWindow):
                     stats.prompt_tokens,
                     stats.completion_tokens
                 )
+
+        # Fetch account balance when restoring session
+        if session.agent:
+            asyncio.ensure_future(self._update_account_balance(session))
+
+    async def _update_account_balance(self, session: TabSession) -> None:
+        """Fetch and update account balance display."""
+        if not session.agent:
+            return
+        try:
+            balance = await session.agent.get_account_balance()
+            self._chat.update_balance(balance)
+        except Exception as e:
+            logger.debug(f"Failed to update balance: {e}")
 
     def _save_chat_to_conversation(self, session: TabSession) -> None:
         """Save current chat to persistent conversation."""
