@@ -31,6 +31,8 @@ from gui.tab_session import TabSession
 from gui.hosts_view import HostsView
 from gui.setup_dialog import SetupDialog
 from gui.unlock_dialog import UnlockDialog
+from gui.about_dialog import AboutDialog
+from core.resources import get_resource_path
 
 logger = logging.getLogger(__name__)
 
@@ -45,6 +47,10 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
+
+        # Set window icon
+        logo_path = get_resource_path("logo.ico")
+        self.setWindowIcon(QIcon(str(logo_path)))
 
         # Tab management
         self._sessions: Dict[str, TabSession] = {}  # tab_id -> TabSession
@@ -443,6 +449,12 @@ class MainWindow(QMainWindow):
         self._config_btn.setToolTip("Configuracoes do aplicativo")
         self._config_btn.triggered.connect(self._on_config_clicked)
         toolbar.addAction(self._config_btn)
+
+        # About button
+        self._about_btn = QAction("Sobre", self)
+        self._about_btn.setToolTip("Sobre o RB Terminal")
+        self._about_btn.triggered.connect(self._on_about_clicked)
+        toolbar.addAction(self._about_btn)
 
         return toolbar
 
@@ -880,6 +892,11 @@ class MainWindow(QMainWindow):
         result = dialog.exec()
         if result == QDialog.DialogCode.Accepted:
             self._apply_settings_changes()
+
+    def _on_about_clicked(self) -> None:
+        """Handle about button click - show about dialog."""
+        dialog = AboutDialog(parent=self)
+        dialog.exec()
 
     @Slot()
     def _on_quick_connect(self) -> None:

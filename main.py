@@ -12,11 +12,19 @@ import logging
 import argparse
 from pathlib import Path
 
+# Set AppUserModelID for Windows taskbar icon (must be before QApplication)
+if sys.platform == 'win32':
+    import ctypes
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID('rb-terminal.app')
+
 from PySide6.QtWidgets import QApplication
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QIcon
 import qasync
 
 from gui.main_window import MainWindow
+from gui.splash import SplashScreen
+from core.resources import get_resource_path
 
 
 def setup_logging(debug: bool = False) -> None:
@@ -63,8 +71,17 @@ def main() -> int:
     app.setApplicationName("RB Terminal")
     app.setApplicationVersion("0.1.0")
 
+    # Set application icon
+    logo_path = get_resource_path("logo.ico")
+    app.setWindowIcon(QIcon(str(logo_path)))
+
     # Enable high DPI scaling
     app.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps)
+
+    # Show splash screen
+    splash = SplashScreen()
+    splash.show()
+    app.processEvents()
 
     # Create async event loop integrated with Qt
     loop = qasync.QEventLoop(app)
@@ -73,6 +90,9 @@ def main() -> int:
     # Create and show main window
     window = MainWindow()
     window.show()
+
+    # Close splash screen
+    splash.finish(window)
 
     # Run the event loop
     with loop:
