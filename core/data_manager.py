@@ -574,13 +574,19 @@ class DataManager:
         with open(path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
-    def _save(self) -> None:
-        """Save data to file."""
+    def _save(self, skip_telegram_backup: bool = False) -> None:
+        """Save data to file.
+
+        Args:
+            skip_telegram_backup: If True, don't send backup to Telegram.
+                                  Used for frequent updates like chat messages.
+        """
         try:
             self._write_to_path(self._data_path)
             logger.debug("Data saved")
-            # Send backup to Telegram if enabled
-            self._send_telegram_backup()
+            # Send backup to Telegram if enabled (skip for chat updates)
+            if not skip_telegram_backup:
+                self._send_telegram_backup()
 
         except Exception as e:
             logger.error(f"Failed to save data: {e}")
@@ -999,7 +1005,7 @@ class DataManager:
         conv = Conversation(host_id=host_id, title=title or "Nova conversa")
         self._conversations.append(conv)
         self._enforce_conversation_limit(host_id)
-        self._save()
+        self._save(skip_telegram_backup=True)
         return conv
 
     def update_conversation(
@@ -1038,7 +1044,7 @@ class DataManager:
                     conv.title = content[:50] + ("..." if len(content) > 50 else "")
                     break
 
-        self._save()
+        self._save(skip_telegram_backup=True)
         return conv
 
     def delete_conversation(self, conv_id: str) -> bool:
@@ -1046,7 +1052,7 @@ class DataManager:
         for i, conv in enumerate(self._conversations):
             if conv.id == conv_id:
                 self._conversations.pop(i)
-                self._save()
+                self._save(skip_telegram_backup=True)
                 return True
         return False
 
