@@ -83,7 +83,10 @@ Salvos em `~/.rb-terminal/` (ou `%APPDATA%\.rb-terminal` no Windows):
     "card_visible_fields": ["name", "host", "tags", "device_type"],
     "list_visible_fields": ["name", "host", "port", "username", "tags", "device_type", "manufacturer"],
     "list_column_widths": {"host": 200, "port": 80},
-    "ai_system_prompt": ""
+    "ai_system_prompt": "",
+    "telegram_bot_token": "",
+    "telegram_chat_id": "",
+    "telegram_backup_enabled": false
   },
   "hosts": [
     {
@@ -173,8 +176,9 @@ Dialog para desbloquear quando há senha mestra mas sem sessão cacheada (novo c
 ### gui/settings_dialog.py
 
 Dialog de configurações com QTabWidget:
-- **Aba Geral:** API OpenRouter (key, modelo, iterações, posição chat), Armazenamento, Backup, Winbox.
+- **Aba Geral:** API OpenRouter (key, modelo, iterações, posição chat), Armazenamento, Winbox.
 - **Aba IA:** System prompt editável com preview. Dados do host e `TOOL_INSTRUCTION` são injetados automaticamente (não editáveis).
+- **Aba Backup:** Abrir data.json, Export/Import, Telegram (token, chat_id, ativar backup automático).
 
 ## Notas Técnicas
 
@@ -193,3 +197,4 @@ Dialog de configurações com QTabWidget:
 13. **System Prompt IA:** Estrutura: `[prompt editável] + [dados do host] + [TOOL_INSTRUCTION]`. O usuário edita só a primeira parte. Dados do host (nome, IP, tipo, fabricante, tags, notes) e instrução da ferramenta são injetados automaticamente em `_get_system_prompt()`.
 14. **Usage Tracking:** `UsageStats` em agent.py rastreia tokens e custo. Custo real é buscado via `/generation?id=` após cada chamada. Estatísticas salvas por conversa em `data.json`.
 15. **SFTP:** File browser lateral usa mesma conexão SSH. Posição configurável (left/right/bottom). Download de pasta mostra progresso como "X/Y arquivos (Z%)", arquivos individuais como "X.X/Y.Y KB ou MB (Z%)". Edição remota: arquivo baixado para temp, aberto no editor padrão, monitorado por `QTimer`, upload automático ao salvar.
+16. **Telegram Backup:** Envia `data.json` para Telegram a cada `_save()`. Configurável em Settings > Backup. Campos: `telegram_bot_token`, `telegram_chat_id`, `telegram_backup_enabled`. Operações de conversa usam `skip_telegram_backup=True` para evitar spam. Caption inclui timestamp e hostname.
