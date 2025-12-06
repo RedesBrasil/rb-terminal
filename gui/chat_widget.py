@@ -574,6 +574,10 @@ class ChatWidget(QWidget):
         elif not self._is_processing:
             self.set_status("Pronto")
 
+    def focus_input(self) -> None:
+        """Set focus to the input field."""
+        self._input_field.setFocus()
+
     # === Conversation management ===
 
     def _on_conversation_selected(self, index: int) -> None:

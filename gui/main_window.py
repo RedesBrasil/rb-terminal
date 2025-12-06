@@ -1038,6 +1038,8 @@ class MainWindow(QMainWindow):
         """Toggle chat panel visibility."""
         self._chat_visible = not self._chat_visible
         self._apply_chat_visibility()
+        if self._chat_visible:
+            self._chat.focus_input()
 
     @Slot()
     def _on_toggle_sftp(self) -> None:
@@ -1529,7 +1531,11 @@ class MainWindow(QMainWindow):
             # Ensure injected command lines respect carriage return to avoid offsetting columns
             if session.terminal:
                 session.terminal.append_output(f"\r\n$ {cmd}\r\n")
-                session.terminal.append_output(_normalize_for_terminal(output))
+                session.terminal.append_output(_normalize_for_terminal(output) + "\r\n")
+
+            # Send Enter to PTY to force shell to show prompt again
+            if session.ssh_session and session.ssh_session.is_connected:
+                asyncio.create_task(session.ssh_session.send_input("\r"))
 
         def on_thinking(status: str) -> None:
             self._chat.set_status(status)
