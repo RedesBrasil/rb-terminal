@@ -120,6 +120,7 @@ class HostDialog(QDialog):
 
         # Port
         self._port_input = QSpinBox()
+        self._port_input.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         self._port_input.setRange(1, 65535)
         self._port_input.setValue(22)
         form.addRow("Porta:", self._port_input)
@@ -269,6 +270,7 @@ class HostDialog(QDialog):
 
         # Winbox port
         self._winbox_port = QSpinBox()
+        self._winbox_port.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         self._winbox_port.setRange(0, 65535)
         self._winbox_port.setValue(0)
         self._winbox_port.setSpecialValueText("8291")
@@ -278,6 +280,7 @@ class HostDialog(QDialog):
         # HTTP port and HTTPS checkbox
         http_layout = QHBoxLayout()
         self._http_port = QSpinBox()
+        self._http_port.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         self._http_port.setRange(1, 65535)
         self._http_port.setValue(80)
         self._http_port.setToolTip("Porta HTTP para acesso web")
@@ -653,6 +656,7 @@ class HostDialog(QDialog):
 
         # Port spinbox
         port_spin = QSpinBox()
+        port_spin.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         port_spin.setRange(1, 65535)
         port_spin.setValue(port if port > 0 else 1)
         port_spin.setFixedWidth(80)
@@ -960,6 +964,7 @@ class QuickConnectDialog(QDialog):
 
         # Port
         self._port_input = QSpinBox()
+        self._port_input.setButtonSymbols(QSpinBox.ButtonSymbols.NoButtons)
         self._port_input.setRange(1, 65535)
         self._port_input.setValue(22)
         form.addRow("Porta:", self._port_input)
