@@ -80,6 +80,7 @@ Regras importantes:
 
     # This is always injected at the end of the prompt (hidden from user)
     TOOL_INSTRUCTION = "\n\nVocê tem acesso à ferramenta execute_command para rodar comandos no terminal SSH conectado."
+    TOOL_INSTRUCTION_WITH_WEB = "\n\nVocê tem acesso às seguintes ferramentas:\n- execute_command: para rodar comandos no terminal SSH conectado\n- web_search: para pesquisar informações na internet quando precisar de documentação, tutoriais ou informações atualizadas"
 
     DEFAULT_MAX_ITERATIONS = 10
 
@@ -103,6 +104,24 @@ Regras importantes:
         }
     ]
 
+    WEB_SEARCH_TOOL = {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "Pesquisa informações atualizadas na internet. Use quando precisar buscar documentação, tutoriais, soluções de problemas, comandos específicos, ou informações que você não conhece ou não tem certeza.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "A query de pesquisa para buscar na internet (em português ou inglês)"
+                    }
+                },
+                "required": ["query"]
+            }
+        }
+    }
+
     def __init__(self, deps: AgentDeps):
         """
         Initialize the SSH Agent.
@@ -117,6 +136,7 @@ Regras importantes:
         self._http_client: Optional[httpx.AsyncClient] = None
         self._cached_api_key: Optional[str] = None  # Track API key for client invalidation
         self.usage_stats = UsageStats()
+        self._web_search_enabled = False
 
     @property
     def api_key(self) -> str:
@@ -185,7 +205,10 @@ Regras importantes:
             prompt += "\n\nMetadados do dispositivo:\n- " + "\n- ".join(metadata_parts)
 
         # Always add tool instruction at the end (hidden from user's editable prompt)
-        prompt += self.TOOL_INSTRUCTION
+        if self._web_search_enabled:
+            prompt += self.TOOL_INSTRUCTION_WITH_WEB
+        else:
+            prompt += self.TOOL_INSTRUCTION
 
         return prompt
 
@@ -234,6 +257,18 @@ Regras importantes:
             await self._http_client.aclose()
             self._http_client = None
 
+    def _get_tools(self) -> list[dict]:
+        """
+        Get list of available tools based on current settings.
+
+        Returns:
+            List of tool definitions
+        """
+        tools = list(self.TOOLS)
+        if self._web_search_enabled:
+            tools.append(self.WEB_SEARCH_TOOL)
+        return tools
+
     async def get_account_balance(self) -> Optional[float]:
         """
         Fetch account balance/credits from OpenRouter.
@@ -270,7 +305,7 @@ Regras importantes:
         }
 
         if use_tools:
-            payload["tools"] = self.TOOLS
+            payload["tools"] = self._get_tools()
             payload["tool_choice"] = "auto"
             # Force OpenRouter to only use providers that support tool calling
             # and enable fallback to other providers if one fails
@@ -373,6 +408,68 @@ Regras importantes:
                 logger.debug(f"Failed to fetch generation cost (attempt {attempt + 1}): {e}")
         return 0.0
 
+    async def _execute_web_search(self, query: str) -> str:
+        """
+        Execute web search using OpenRouter's web plugin.
+
+        Args:
+            query: Search query
+
+        Returns:
+            Search results as text
+        """
+        logger.info(f"Web search: {query}")
+
+        if self.deps.on_thinking:
+            self.deps.on_thinking(f"Pesquisando: {query}")
+
+        try:
+            # Use the same model with :online suffix for web search
+            search_payload = {
+                "model": f"{self.model}:online",
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": "Você é um assistente de pesquisa. Resuma as informações encontradas de forma clara e concisa, incluindo dados técnicos relevantes. Inclua links das fontes quando disponíveis."
+                    },
+                    {
+                        "role": "user",
+                        "content": query
+                    }
+                ],
+                "plugins": [
+                    {
+                        "id": "web",
+                        "max_results": 5
+                    }
+                ]
+            }
+
+            response = await self.http_client.post(
+                "/chat/completions",
+                json=search_payload
+            )
+            response.raise_for_status()
+            result = response.json()
+
+            # Process usage for the search call too
+            await self._process_usage(result)
+
+            choices = result.get("choices", [])
+            if choices:
+                content = choices[0].get("message", {}).get("content", "")
+                if content:
+                    return f"Resultados da pesquisa:\n\n{content}"
+
+            return "Nenhum resultado encontrado na pesquisa."
+
+        except httpx.HTTPStatusError as e:
+            logger.error(f"Web search API error: {e.response.status_code} - {e.response.text}")
+            return f"Erro na pesquisa web: {e.response.status_code}"
+        except Exception as e:
+            logger.error(f"Web search failed: {e}")
+            return f"Erro na pesquisa web: {str(e)}"
+
     async def _execute_tool_call(self, tool_call: dict) -> str:
         """
         Execute a tool call and return result.
@@ -416,6 +513,13 @@ Regras importantes:
             except Exception as e:
                 return f"Error executing command: {str(e)}"
 
+        elif name == "web_search":
+            query = args.get("query", "")
+            if not query:
+                return "Error: No search query provided"
+
+            return await self._execute_web_search(query)
+
         return f"Error: Unknown tool: {name}"
 
     def _get_max_iterations(self) -> int:
@@ -425,18 +529,20 @@ Regras importantes:
         except Exception:
             return self.DEFAULT_MAX_ITERATIONS
 
-    async def chat(self, user_message: str) -> str:
+    async def chat(self, user_message: str, web_search: bool = False) -> str:
         """
         Send a message to the agent and get a response.
         The agent may execute multiple commands before responding.
 
         Args:
             user_message: User's message/request
+            web_search: Whether web search tool is available for this request
 
         Returns:
             Agent's final response
         """
         self._cancelled = False
+        self._web_search_enabled = web_search
 
         if not self.api_key:
             return "Erro: API key não configurada. Verifique o arquivo settings.json"

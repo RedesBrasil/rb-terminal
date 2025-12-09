@@ -11,7 +11,7 @@ from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QTextEdit,
     QPushButton, QLabel, QScrollArea,
     QFrame, QSizePolicy, QStyle, QToolButton,
-    QComboBox, QTextBrowser
+    QComboBox, QTextBrowser, QCheckBox
 )
 from PySide6.QtCore import Qt, Signal, Slot, QTimer, QSize
 from PySide6.QtGui import QKeyEvent
@@ -183,13 +183,13 @@ class ChatWidget(QWidget):
     - Conversation selector
 
     Emits:
-    - message_sent(str): When user sends a message
+    - message_sent(str, bool): When user sends a message (message, web_search_enabled)
     - stop_requested(): When user clicks stop button
     - conversation_changed(str): When user selects a different conversation
     - new_conversation_requested(): When user wants to start a new conversation
     """
 
-    message_sent = Signal(str)
+    message_sent = Signal(str, bool)  # (message, web_search_enabled)
     stop_requested = Signal()
     conversation_changed = Signal(str)  # Emits conv_id or "" for new
     new_conversation_requested = Signal()
@@ -392,6 +392,39 @@ class ChatWidget(QWidget):
         QTimer.singleShot(0, self._position_action_button)
 
         layout.addLayout(input_layout)
+
+        # Web search checkbox
+        self._web_search_checkbox = QCheckBox("Pesquisa na Web")
+        self._web_search_checkbox.setToolTip(
+            "Quando ativado, a IA pode pesquisar na internet para obter informações atualizadas"
+        )
+        self._web_search_checkbox.setChecked(False)
+        self._web_search_checkbox.setStyleSheet("""
+            QCheckBox {
+                color: #9cdcfe;
+                font-size: 11px;
+                padding: 2px 4px;
+            }
+            QCheckBox::indicator {
+                width: 14px;
+                height: 14px;
+            }
+            QCheckBox::indicator:unchecked {
+                border: 1px solid #555555;
+                background-color: #3c3c3c;
+                border-radius: 2px;
+            }
+            QCheckBox::indicator:checked {
+                border: 1px solid #007acc;
+                background-color: #007acc;
+                border-radius: 2px;
+            }
+            QCheckBox::indicator:hover {
+                border: 1px solid #007acc;
+            }
+        """)
+        layout.addWidget(self._web_search_checkbox)
+
         self._update_action_button()
 
     @Slot()
@@ -401,7 +434,8 @@ class ChatWidget(QWidget):
         if message and not self._is_processing:
             self._input_field.clear()
             self.add_message(message, is_user=True)
-            self.message_sent.emit(message)
+            web_search = self._web_search_checkbox.isChecked()
+            self.message_sent.emit(message, web_search)
 
     @Slot()
     def _on_stop_clicked(self) -> None:

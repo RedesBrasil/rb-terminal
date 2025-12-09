@@ -1928,8 +1928,8 @@ class MainWindow(QMainWindow):
             if combined:
                 session.terminal.append_output(combined)
 
-    @Slot(str)
-    def _on_chat_message(self, message: str) -> None:
+    @Slot(str, bool)
+    def _on_chat_message(self, message: str, web_search: bool = False) -> None:
         """Handle message from chat widget."""
         session = self._get_active_session()
         if not session or not session.agent or not session.ssh_session:
@@ -1937,13 +1937,13 @@ class MainWindow(QMainWindow):
             return
 
         self._chat.set_processing(True)
-        self._agent_task = asyncio.ensure_future(self._process_chat_message(session, message))
+        self._agent_task = asyncio.ensure_future(self._process_chat_message(session, message, web_search))
 
-    async def _process_chat_message(self, session: TabSession, message: str) -> None:
+    async def _process_chat_message(self, session: TabSession, message: str, web_search: bool = False) -> None:
         """Process chat message with AI agent."""
         try:
             if session.agent:
-                response = await session.agent.chat(message)
+                response = await session.agent.chat(message, web_search=web_search)
                 self._chat.add_message(response, is_user=False)
 
                 # Update session chat state with current display messages
