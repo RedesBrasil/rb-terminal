@@ -2102,6 +2102,9 @@ class MainWindow(QMainWindow):
         if not session:
             return
 
+        # Save current web search state before switching
+        session.chat_state.web_search_enabled = self._chat.is_web_search_enabled()
+
         # Save current state first
         if session.chat_state.conversation_id and session.agent:
             self._save_chat_to_conversation(session)
@@ -2149,9 +2152,14 @@ class MainWindow(QMainWindow):
                     conv.prompt_tokens,
                     conv.completion_tokens
                 )
+
+                # Reset web search state (not persisted per conversation)
+                session.chat_state.web_search_enabled = False
+                self._chat.set_web_search_enabled(False)
         else:
             # New conversation
             session.chat_state.clear()
+            self._chat.set_web_search_enabled(False)
             if session.agent:
                 session.agent.reset()
 
@@ -2170,6 +2178,7 @@ class MainWindow(QMainWindow):
         session.chat_state.clear()
         self._chat.clear_messages()
         self._chat.set_current_conversation(None)
+        self._chat.set_web_search_enabled(False)
 
         if session.agent:
             session.agent.reset()

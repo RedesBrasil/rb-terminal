@@ -612,6 +612,14 @@ class ChatWidget(QWidget):
         """Set focus to the input field."""
         self._input_field.setFocus()
 
+    def is_web_search_enabled(self) -> bool:
+        """Get web search checkbox state."""
+        return self._web_search_checkbox.isChecked()
+
+    def set_web_search_enabled(self, enabled: bool) -> None:
+        """Set web search checkbox state."""
+        self._web_search_checkbox.setChecked(enabled)
+
     # === Conversation management ===
 
     def _on_conversation_selected(self, index: int) -> None:

@@ -16,11 +16,13 @@ class ChatState:
     """In-memory chat state for a tab."""
     conversation_id: Optional[str] = None  # Current conversation ID (None = new)
     display_messages: List[Tuple[str, bool]] = field(default_factory=list)  # [(text, is_user), ...]
+    web_search_enabled: bool = False  # Web search checkbox state per conversation
 
     def clear(self) -> None:
         """Clear the chat state for a new conversation."""
         self.conversation_id = None
         self.display_messages.clear()
+        self.web_search_enabled = False
 
 
 @dataclass
