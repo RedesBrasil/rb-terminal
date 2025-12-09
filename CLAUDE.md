@@ -148,6 +148,7 @@ Agente IA que executa comandos SSH via OpenRouter API. Fluxo agêntico: Mensagem
 - `UsageStats`: Dataclass para tracking de tokens e custo (`prompt_tokens`, `completion_tokens`, `total_cost`).
 - `_get_system_prompt()`: Monta prompt = (custom ou default) + dados do host + instrução da ferramenta.
 - System prompt customizável via `ai_system_prompt` em settings (vazio = usar default).
+- **Web Search:** Tool `web_search` disponível quando checkbox "Pesquisa na Web" está marcada. Usa OpenRouter com sufixo `:online` e plugin Exa. A IA decide autonomamente quando pesquisar.
 
 ### core/ssh_session.py
 
@@ -198,3 +199,23 @@ Dialog de configurações com QTabWidget:
 14. **Usage Tracking:** `UsageStats` em agent.py rastreia tokens e custo. Custo real é buscado via `/generation?id=` após cada chamada. Estatísticas salvas por conversa em `data.json`.
 15. **SFTP:** File browser lateral usa mesma conexão SSH. Posição configurável (left/right/bottom). Download de pasta mostra progresso como "X/Y arquivos (Z%)", arquivos individuais como "X.X/Y.Y KB ou MB (Z%)". Edição remota: arquivo baixado para temp, aberto no editor padrão, monitorado por `QTimer`, upload automático ao salvar.
 16. **Telegram Backup:** Envia `data.json` para Telegram a cada `_save()`. Configurável em Settings > Backup. Campos: `telegram_bot_token`, `telegram_chat_id`, `telegram_backup_enabled`. Operações de conversa usam `skip_telegram_backup=True` para evitar spam. Caption inclui timestamp e hostname.
+17. **Web Search:** Checkbox "Pesquisa na Web" no chat habilita tool `web_search` para a IA. Implementação em `_execute_web_search()` usa `model:online` com plugin Exa do OpenRouter. A IA decide quando usar baseado no contexto (quando usuário pede pesquisa ou informações atualizadas). Custo adicional: ~$0.02 por pesquisa (5 resultados).
+
+## Build
+
+Para compilar o executável Windows:
+
+```bash
+# Usando o script de build (recomendado)
+build.bat
+
+# Ou manualmente
+python -m pip install -r requirements.txt pyinstaller
+python -m PyInstaller build.spec --clean
+```
+
+O executável será gerado em `dist/RB-Terminal.exe`.
+
+**Arquivos de build:**
+- `build.bat` - Script Windows que instala dependências e compila
+- `build.spec` - Configuração PyInstaller com hiddenimports necessários (pywin32, asyncssh, httpx, etc.)
