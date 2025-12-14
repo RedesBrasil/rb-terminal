@@ -28,7 +28,8 @@ rb-terminal/
 │   ├── crypto.py               # Criptografia PBKDF2 + master password
 │   ├── hosts.py                # [LEGADO] Mantido para referência
 │   ├── settings.py             # [LEGADO] Mantido para referência
-│   └── device_types.py         # Gerenciador de tipos de dispositivos
+│   ├── device_types.py         # Gerenciador de tipos de dispositivos
+│   └── web_autologin.py        # Auto-login web (MikroTik, Zabbix, Proxmox)
 ├── gui/
 │   ├── main_window.py          # Janela principal com hosts view + abas + chat
 │   ├── terminal_widget.py      # Widget terminal com emulação ANSI
@@ -102,7 +103,9 @@ Salvos em `~/.rb-terminal/` (ou `%APPDATA%\.rb-terminal` no Windows):
       ],
       "winbox_port": 8291,
       "http_port": 80,
-      "https_enabled": false
+      "https_enabled": false,
+      "web_username": "admin",
+      "web_password_encrypted": "..."
     }
   ],
   "conversations": [
@@ -192,7 +195,7 @@ Dialog de configurações com QTabWidget:
 7. **Migração:** Arquivos legados (hosts.json, settings.json, .key) são migrados automaticamente
 8. **Port Knocking:** Sequência de portas TCP/UDP acionadas antes da conexão SSH (fire and forget, sem esperar resposta)
 9. **Winbox:** Menu de contexto do host lança `winbox.exe <ip>:<porta> <user> <senha>`. Porta padrão 8291, configurável por host. Port knocking executado antes se configurado.
-10. **Acesso Web:** Menu de contexto abre navegador padrão com `http(s)://<ip>:<porta>`. Porta e HTTPS configuráveis por host em Opções Avançadas.
+10. **Acesso Web:** Menu de contexto abre navegador padrão com `http(s)://<ip>:<porta>`. Porta e HTTPS configuráveis por host em Opções Avançadas. Para MikroTik, Zabbix e Proxmox: se `web_username` e `web_password` estiverem preenchidos, faz auto-login via Selenium (`core/web_autologin.py`). Proxmox adiciona `@pam` automaticamente se não especificado.
 11. **Múltiplos IPs:** Cada host pode ter múltiplos endereços (IP local, público, IPv6, domínio). Campo `hosts` é lista, `host` é propriedade de compatibilidade que retorna o primeiro. Ao conectar: fallback automático entre IPs. Menu de contexto mostra submenu com todos os IPs disponíveis para SSH, Winbox e Web.
 12. **Hosts View:** Modo cards (grid) ou lista (QTableWidget com QHeaderView nativo). Campos visíveis e ordem configuráveis via botão ☰. Colunas redimensionáveis com larguras persistidas. Ordenação por: name, host, port, username, device_type, manufacturer, os_version.
 13. **System Prompt IA:** Estrutura: `[prompt editável] + [dados do host] + [TOOL_INSTRUCTION]`. O usuário edita só a primeira parte. Dados do host (nome, IP, tipo, fabricante, tags, notes) e instrução da ferramenta são injetados automaticamente em `_get_system_prompt()`.
