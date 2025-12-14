@@ -130,6 +130,8 @@ class Host:
     winbox_port: int = 0  # 0 = usar padrão 8291
     http_port: int = 80  # Porta HTTP para acesso web
     https_enabled: bool = False  # Usar HTTPS ao invés de HTTP
+    web_username: Optional[str] = None  # Usuário para auto-login web
+    web_password_encrypted: Optional[str] = None  # Senha para auto-login web (criptografada)
 
     @property
     def host(self) -> str:
@@ -184,6 +186,8 @@ class Host:
             winbox_port=data.get("winbox_port", 0),
             http_port=data.get("http_port", 80),
             https_enabled=data.get("https_enabled", False),
+            web_username=data.get("web_username"),
+            web_password_encrypted=data.get("web_password_encrypted"),
         )
 
 
@@ -1097,12 +1101,18 @@ class DataManager:
         port_knocking: Optional[list] = None,
         winbox_port: int = 0,
         http_port: int = 80,
-        https_enabled: bool = False
+        https_enabled: bool = False,
+        web_username: Optional[str] = None,
+        web_password: Optional[str] = None
     ) -> Host:
         """Add a new host."""
         password_encrypted = None
         if password:
             password_encrypted = self._crypto.encrypt(password) if self._crypto else password
+
+        web_password_encrypted = None
+        if web_password:
+            web_password_encrypted = self._crypto.encrypt(web_password) if self._crypto else web_password
 
         hosts_list = hosts if hosts else []
 
@@ -1124,7 +1134,9 @@ class DataManager:
             port_knocking=port_knocking if port_knocking else [],
             winbox_port=winbox_port,
             http_port=http_port,
-            https_enabled=https_enabled
+            https_enabled=https_enabled,
+            web_username=web_username if web_username else None,
+            web_password_encrypted=web_password_encrypted
         )
 
         self._hosts.append(new_host)
@@ -1153,7 +1165,10 @@ class DataManager:
         port_knocking: Optional[list] = None,
         winbox_port: Optional[int] = None,
         http_port: Optional[int] = None,
-        https_enabled: Optional[bool] = None
+        https_enabled: Optional[bool] = None,
+        web_username: Optional[str] = None,
+        web_password: Optional[str] = None,
+        clear_web_password: bool = False
     ) -> Optional[Host]:
         """Update an existing host."""
         existing = self.get_host_by_id(host_id)
@@ -1194,6 +1209,16 @@ class DataManager:
             existing.http_port = http_port
         if https_enabled is not None:
             existing.https_enabled = https_enabled
+        if web_username is not None:
+            existing.web_username = web_username if web_username else None
+
+        if clear_web_password:
+            existing.web_password_encrypted = None
+        elif web_password is not None:
+            if web_password:
+                existing.web_password_encrypted = self._crypto.encrypt(web_password) if self._crypto else web_password
+            else:
+                existing.web_password_encrypted = None
 
         if clear_password:
             existing.password_encrypted = None
@@ -1235,6 +1260,19 @@ class DataManager:
         """Check if host has a saved password."""
         host = self.get_host_by_id(host_id)
         return host is not None and host.password_encrypted is not None
+
+    def get_web_password(self, host: Host) -> Optional[str]:
+        """Get decrypted web password for a host."""
+        if not host or not host.web_password_encrypted:
+            return None
+
+        try:
+            if self._crypto:
+                return self._crypto.decrypt(host.web_password_encrypted)
+            return host.web_password_encrypted
+        except Exception as e:
+            logger.error(f"Failed to decrypt web password: {e}")
+            return None
 
     # === Export/Import ===
 

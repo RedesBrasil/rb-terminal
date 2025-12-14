@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 # Default values for autocomplete fields
 DEFAULT_MANUFACTURERS = [
     "MikroTik",
+    "Zabbix",
+    "Proxmox",
     "Huawei",
     "Linux",
     "Cisco",
@@ -293,6 +295,18 @@ class HostDialog(QDialog):
 
         self._advanced_layout.addRow("Porta HTTP:", http_layout)
 
+        # Web credentials (for auto-login on MikroTik/Zabbix/Proxmox)
+        self._web_user = QLineEdit()
+        self._web_user.setPlaceholderText("Usuario para login web")
+        self._web_user.setToolTip("Usuario para auto-login em MikroTik, Zabbix ou Proxmox")
+        self._advanced_layout.addRow("Web Username:", self._web_user)
+
+        self._web_pass = QLineEdit()
+        self._web_pass.setEchoMode(QLineEdit.EchoMode.Password)
+        self._web_pass.setPlaceholderText("Senha para login web")
+        self._web_pass.setToolTip("Senha para auto-login em MikroTik, Zabbix ou Proxmox")
+        self._advanced_layout.addRow("Web Password:", self._web_pass)
+
         form.addRow("", self._advanced_section)
 
         # === Port Knocking section (collapsible) ===
@@ -480,6 +494,12 @@ class HostDialog(QDialog):
         # HTTP settings
         self._http_port.setValue(self._host.http_port)
         self._https_enabled.setChecked(self._host.https_enabled)
+
+        # Web credentials
+        if self._host.web_username:
+            self._web_user.setText(self._host.web_username)
+        if self._host.web_password_encrypted:
+            self._web_pass.setPlaceholderText("••••••••  (senha salva)")
 
     def _toggle_password_visibility(self, checked: bool) -> None:
         """Toggle password visibility."""
@@ -731,6 +751,8 @@ class HostDialog(QDialog):
         winbox_port = self._winbox_port.value()
         http_port = self._http_port.value()
         https_enabled = self._https_enabled.isChecked()
+        web_username = self._web_user.text().strip()
+        web_password = self._web_pass.text()
 
         # Validation
         if not name:
@@ -780,7 +802,9 @@ class HostDialog(QDialog):
                     port_knocking=port_knocking,
                     winbox_port=winbox_port,
                     http_port=http_port,
-                    https_enabled=https_enabled
+                    https_enabled=https_enabled,
+                    web_username=web_username if web_username else None,
+                    web_password=web_password if web_password else None
                 )
             else:
                 # Add new host
@@ -802,7 +826,9 @@ class HostDialog(QDialog):
                     port_knocking=port_knocking,
                     winbox_port=winbox_port,
                     http_port=http_port,
-                    https_enabled=https_enabled
+                    https_enabled=https_enabled,
+                    web_username=web_username if web_username else None,
+                    web_password=web_password if web_password else None
                 )
 
             self.accept()

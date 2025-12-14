@@ -1702,20 +1702,66 @@ class MainWindow(QMainWindow):
         else:
             url = f"{protocol}://{formatted_host}:{port}"
 
+        # Check if should use auto-login
+        web_password = self._data_manager.get_web_password(host)
+        should_autologin = (
+            host.manufacturer in ["MikroTik", "Zabbix", "Proxmox"] and
+            host.web_username and
+            web_password
+        )
+
         # Port knocking before opening browser
         if host.port_knocking:
             asyncio.create_task(self._perform_port_knock(target_ip, host.port_knocking))
             # Small delay for port knocking to complete
-            QTimer.singleShot(500, lambda: self._execute_web_access(url))
+            QTimer.singleShot(500, lambda: self._execute_web_access(
+                url, host, should_autologin, web_password
+            ))
         else:
-            self._execute_web_access(url)
+            self._execute_web_access(url, host, should_autologin, web_password)
 
-    def _execute_web_access(self, url: str) -> None:
-        """Open URL in default browser."""
+    def _execute_web_access(
+        self,
+        url: str,
+        host=None,
+        should_autologin: bool = False,
+        web_password: str = None
+    ) -> None:
+        """Open URL in default browser, with optional auto-login."""
         try:
+            if should_autologin and host and web_password:
+                self._status_bar.showMessage(f"Auto-login em {host.manufacturer}...", 5000)
+                try:
+                    from core.web_autologin import (
+                        autologin_mikrotik, autologin_zabbix, autologin_proxmox
+                    )
+
+                    if host.manufacturer == "MikroTik":
+                        autologin_mikrotik(url, host.web_username, web_password)
+                    elif host.manufacturer == "Zabbix":
+                        autologin_zabbix(url, host.web_username, web_password)
+                    elif host.manufacturer == "Proxmox":
+                        autologin_proxmox(url, host.web_username, web_password)
+
+                    self._status_bar.showMessage(f"Auto-login concluído: {url}", 3000)
+                    logger.info(f"Auto-login completed for {url}")
+                    return
+
+                except ImportError as e:
+                    logger.warning(f"Selenium not installed, falling back to webbrowser: {e}")
+                    self._status_bar.showMessage("Selenium não instalado, abrindo navegador normal", 3000)
+                except Exception as e:
+                    logger.error(f"Auto-login failed: {e}")
+                    QMessageBox.warning(
+                        self, "Aviso",
+                        f"Erro no auto-login, abrindo navegador normalmente:\n{e}"
+                    )
+
+            # Fallback to regular browser
             webbrowser.open(url)
             self._status_bar.showMessage(f"Abrindo navegador: {url}", 3000)
             logger.info(f"Opened browser for {url}")
+
         except Exception as e:
             logger.error(f"Failed to open browser: {e}")
             QMessageBox.critical(self, "Erro", f"Erro ao abrir navegador:\n{e}")

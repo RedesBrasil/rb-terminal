@@ -25,3 +25,7 @@ cryptography>=41.0.0
 
 # Terminal emulator (VT100/xterm)
 pyte>=0.8.1
+
+# Web auto-login (optional)
+selenium>=4.0.0
+webdriver-manager>=4.0.0
