@@ -1,6 +1,13 @@
 """
 Main Window for RB Terminal.
 Contains collapsible hosts sidebar, terminal widget with tabs, and AI chat panel.
+
+Refactored to use managers for better separation of concerns:
+- SessionManager: Tab and session management
+- ConnectionManager: SSH connection handling
+- ChatCoordinator: Chat and conversation management
+- SFTPCoordinator: File browser and directory sync
+- LayoutManager: Splitter and panel layout
 """
 
 import asyncio
@@ -8,9 +15,7 @@ import logging
 import subprocess
 import webbrowser
 from pathlib import Path
-from typing import Optional, Dict
-
-import asyncssh
+from typing import Optional
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -18,11 +23,11 @@ from PySide6.QtWidgets import (
     QLineEdit, QDialog, QTabWidget, QToolButton, QStackedWidget, QFileDialog
 )
 from PySide6.QtCore import Qt, Slot, Signal, QTimer, QSize, QStandardPaths
-from PySide6.QtGui import QCloseEvent, QAction, QColor, QPainter, QPixmap, QIcon
+from PySide6.QtGui import QCloseEvent, QAction, QIcon
 
 from core.ssh_session import SSHSession, SSHConfig
-from core.agent import create_agent, SSHAgent, UsageStats
-from core.data_manager import get_data_manager, DataManager, ChatMessage
+from core.agent import UsageStats
+from core.data_manager import get_data_manager, DataManager
 from gui.terminal_widget import TerminalWidget
 from gui.chat_widget import ChatWidget
 from gui.file_browser import FileBrowser
@@ -34,6 +39,13 @@ from gui.setup_dialog import SetupDialog
 from gui.unlock_dialog import UnlockDialog
 from gui.about_dialog import AboutDialog
 from core.resources import get_resource_path
+
+# Import managers
+from gui.managers.session_manager import SessionManager
+from gui.managers.connection_manager import ConnectionManager
+from gui.managers.chat_coordinator import ChatCoordinator
+from gui.managers.sftp_coordinator import SFTPCoordinator
+from gui.managers.layout_manager import LayoutManager
 
 logger = logging.getLogger(__name__)
 
@@ -53,14 +65,7 @@ class MainWindow(QMainWindow):
         logo_path = get_resource_path("logo.ico")
         self.setWindowIcon(QIcon(str(logo_path)))
 
-        # Tab management
-        self._sessions: Dict[str, TabSession] = {}  # tab_id -> TabSession
-        self._tab_widget: Optional[QTabWidget] = None
-        self._agent_task: Optional[asyncio.Task] = None
-
         self._resize_timer: Optional[QTimer] = None
-        self._chat_visible: bool = False  # Chat starts hidden
-        self._sftp_visible: bool = False  # SFTP browser starts hidden
 
         # Initialize data manager and handle setup/unlock
         self._data_manager = get_data_manager()
@@ -69,34 +74,17 @@ class MainWindow(QMainWindow):
             import sys
             sys.exit(0)
 
-        self._chat_position = self._data_manager.get_chat_position()
-        self._sftp_position = self._data_manager.get_sftp_position()
-        self._splitter_sizes = {
-            "bottom": [700, 300],
-            "left": [300, 700],
-            "right": [700, 300],
-        }
-        self._sftp_splitter_sizes = {
-            "bottom": [700, 250],
-            "left": [250, 700],
-            "right": [700, 250],
-        }
-        self._applying_splitter_sizes = False
-
         # Output timer for batching SSH output
         self._output_timer = QTimer()
         self._output_timer.setSingleShot(True)
         self._output_timer.timeout.connect(self._flush_output_buffer)
 
-        # Status icons for tabs
-        self._status_icons = {}
-        self._create_status_icons()
-
         self._setup_ui()
+        self._setup_managers()
         self._setup_connections()
 
         # Create first empty tab
-        self._create_new_tab()
+        self._session_manager.create_session()
 
         self._update_ui_state()
         self._refresh_hosts_list()
@@ -105,12 +93,7 @@ class MainWindow(QMainWindow):
         self.showMaximized()
 
     def _handle_startup(self) -> bool:
-        """
-        Handle application startup - setup or unlock as needed.
-
-        Returns:
-            True if startup successful, False if user cancelled
-        """
+        """Handle application startup - setup or unlock as needed."""
         dm = self._data_manager
 
         # Case 1: First run (no data.json)
@@ -128,7 +111,6 @@ class MainWindow(QMainWindow):
         # Case 2: Needs migration from legacy files
         elif dm.needs_migration():
             dm.load()  # This triggers migration
-            # Optionally offer to set master password after migration
             reply = QMessageBox.question(
                 self,
                 "Migracao Concluida",
@@ -143,7 +125,7 @@ class MainWindow(QMainWindow):
                     if password:
                         dm.change_master_password("", password)
 
-        # Case 3: Has master password but no cached session (new machine)
+        # Case 3: Has master password but no cached session
         elif dm.needs_unlock():
             error_msg = None
             while True:
@@ -155,28 +137,9 @@ class MainWindow(QMainWindow):
                     break
                 error_msg = "Senha incorreta. Tente novamente."
 
-        # Load data (uses cached session if available)
+        # Load data
         dm.load()
         return True
-
-    def _create_status_icons(self) -> None:
-        """Create status icons for tab states."""
-        def create_circle_icon(color: QColor) -> QIcon:
-            pixmap = QPixmap(12, 12)
-            pixmap.fill(Qt.GlobalColor.transparent)
-            painter = QPainter(pixmap)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-            painter.setBrush(color)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawEllipse(1, 1, 10, 10)
-            painter.end()
-            return QIcon(pixmap)
-
-        self._status_icons = {
-            "disconnected": create_circle_icon(QColor(128, 128, 128)),
-            "connecting": create_circle_icon(QColor(202, 80, 16)),
-            "connected": create_circle_icon(QColor(16, 124, 16)),
-        }
 
     def _setup_ui(self) -> None:
         """Setup the main window UI."""
@@ -191,15 +154,15 @@ class MainWindow(QMainWindow):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
-        # Toolbar (always visible)
+        # Toolbar
         toolbar = self._create_toolbar()
         main_layout.addWidget(toolbar)
 
-        # Stacked widget for switching between hosts view and terminal view
+        # Stacked widget for hosts view and terminal view
         self._stacked_widget = QStackedWidget()
         main_layout.addWidget(self._stacked_widget)
 
-        # Page 0: Hosts view (main screen when not connected)
+        # Page 0: Hosts view
         self._hosts_view = HostsView(self._data_manager)
         self._hosts_view.connect_requested.connect(self._connect_to_host)
         self._hosts_view.edit_requested.connect(self._edit_host)
@@ -210,56 +173,46 @@ class MainWindow(QMainWindow):
         self._hosts_view.quick_connect_requested.connect(self._on_quick_connect)
         self._stacked_widget.addWidget(self._hosts_view)
 
-        # Page 1: Terminal area (tabs + chat)
+        # Page 1: Terminal area
         self._terminal_area = QWidget()
         terminal_layout = QVBoxLayout(self._terminal_area)
         terminal_layout.setContentsMargins(0, 0, 0, 0)
         terminal_layout.setSpacing(0)
         self._content_layout = terminal_layout
 
-        # Tab widget for multiple terminals
+        # Tab widget for terminals
         self._tab_widget = QTabWidget()
-        self._tab_widget.setTabsClosable(False)  # We'll add custom close buttons
+        self._tab_widget.setTabsClosable(False)
         self._tab_widget.setMovable(True)
         self._tab_widget.setDocumentMode(True)
-        self._tab_widget.currentChanged.connect(self._on_tab_changed)
-
-        # Style the tab widget
         self._tab_widget.setStyleSheet("""
-            QTabWidget::pane {
-                border: none;
-                background-color: #1e1e1e;
-            }
+            QTabWidget::pane { border: none; background-color: #1e1e1e; }
             QTabBar::tab {
-                background-color: #2d2d2d;
-                color: #969696;
-                padding: 8px 16px;
-                margin-right: 2px;
-                border-top-left-radius: 4px;
-                border-top-right-radius: 4px;
+                background-color: #2d2d2d; color: #969696;
+                padding: 8px 16px; margin-right: 2px;
+                border-top-left-radius: 4px; border-top-right-radius: 4px;
             }
-            QTabBar::tab:selected {
-                background-color: #1e1e1e;
-                color: #ffffff;
-            }
-            QTabBar::tab:hover:!selected {
-                background-color: #3c3c3c;
-            }
+            QTabBar::tab:selected { background-color: #1e1e1e; color: #ffffff; }
+            QTabBar::tab:hover:!selected { background-color: #3c3c3c; }
         """)
 
-        # Chat panel (position determined by settings)
+        # Chat panel
         self._chat_panel = QFrame()
-        self._update_chat_panel_style()
-        self._setup_chat_panel()
+        self._chat_panel.setStyleSheet("background-color: #252526; border-top: 1px solid #3c3c3c;")
+        chat_layout = QVBoxLayout(self._chat_panel)
+        chat_layout.setContentsMargins(0, 0, 0, 0)
+        chat_layout.setSpacing(0)
+        self._chat = ChatWidget()
+        chat_layout.addWidget(self._chat)
 
-        # SFTP panel (position determined by settings)
+        # SFTP panel
         self._sftp_panel = QFrame()
-        self._update_sftp_panel_style()
-        self._setup_sftp_panel()
-
-        self._terminal_chat_splitter: Optional[QSplitter] = None
-        self._sftp_splitter: Optional[QSplitter] = None
-        self._rebuild_terminal_chat_splitter()
+        self._sftp_panel.setStyleSheet("background-color: #252526; border-right: 1px solid #3c3c3c;")
+        sftp_layout = QVBoxLayout(self._sftp_panel)
+        sftp_layout.setContentsMargins(0, 0, 0, 0)
+        sftp_layout.setSpacing(0)
+        self._sftp_browser = FileBrowser()
+        sftp_layout.addWidget(self._sftp_browser)
 
         self._stacked_widget.addWidget(self._terminal_area)
 
@@ -271,239 +224,46 @@ class MainWindow(QMainWindow):
         # Apply dark theme
         self._apply_dark_theme()
 
-    def _setup_chat_panel(self) -> None:
-        """Setup the chat panel content."""
-        layout = QVBoxLayout(self._chat_panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+    def _setup_managers(self) -> None:
+        """Initialize and configure managers."""
+        # Session Manager
+        self._session_manager = SessionManager(self._tab_widget, self)
+        self._session_manager.set_terminal_callbacks(
+            on_input=self._on_terminal_input_for_session,
+            on_reconnect=self._on_reconnect_for_session,
+            on_prelogin_credentials=self._on_prelogin_credentials_for_session,
+            on_prelogin_cancelled=self._on_prelogin_cancelled_for_session
+        )
+        self._session_manager.tab_changed.connect(self._on_tab_changed)
 
-        # Chat widget
-        self._chat = ChatWidget()
-        layout.addWidget(self._chat)
+        # Connection Manager
+        self._connection_manager = ConnectionManager(self)
+        self._connection_manager.set_callbacks(
+            on_ssh_output=self._on_ssh_output_for_session,
+            on_unexpected_disconnect=lambda sid: self._unexpected_disconnect.emit(sid)
+        )
 
-    def _setup_sftp_panel(self) -> None:
-        """Setup the SFTP file browser panel content."""
-        layout = QVBoxLayout(self._sftp_panel)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        # Chat Coordinator
+        self._chat_coordinator = ChatCoordinator(self._chat, self._data_manager, self)
 
-        # File browser widget
-        self._sftp_browser = FileBrowser()
+        # SFTP Coordinator
+        self._sftp_coordinator = SFTPCoordinator(self._sftp_browser, self)
         self._sftp_browser.download_requested.connect(self._on_sftp_download_requested)
         self._sftp_browser.upload_requested.connect(self._on_sftp_upload_requested)
-        self._sftp_browser.status_message.connect(self._on_sftp_status)
+        self._sftp_browser.status_message.connect(lambda msg: self._status_bar.showMessage(msg, 3000))
         self._sftp_browser.directory_changed.connect(self._on_sftp_directory_changed)
-        layout.addWidget(self._sftp_browser)
 
-    def _update_sftp_panel_style(self) -> None:
-        """Update SFTP panel border based on position."""
-        if not hasattr(self, "_sftp_panel") or self._sftp_panel is None:
-            return
-
-        if self._sftp_position == "bottom":
-            border = "border-top: 1px solid #3c3c3c;"
-        elif self._sftp_position == "left":
-            border = "border-right: 1px solid #3c3c3c;"
-        else:  # right
-            border = "border-left: 1px solid #3c3c3c;"
-
-        self._sftp_panel.setStyleSheet(f"background-color: #252526; {border}")
-
-    def _update_chat_panel_style(self) -> None:
-        """Update chat panel border based on position."""
-        if not hasattr(self, "_chat_panel") or self._chat_panel is None:
-            return
-
-        if self._chat_position == "bottom":
-            border = "border-top: 1px solid #3c3c3c;"
-        elif self._chat_position == "left":
-            border = "border-right: 1px solid #3c3c3c;"
-        else:  # right
-            border = "border-left: 1px solid #3c3c3c;"
-
-        self._chat_panel.setStyleSheet(f"background-color: #252526; {border}")
-
-    def _create_terminal_chat_splitter(self) -> QSplitter:
-        """Create splitter configured for the selected chat position."""
-        if self._chat_position == "bottom":
-            splitter = QSplitter(Qt.Orientation.Vertical)
-            splitter.addWidget(self._tab_widget)
-            splitter.addWidget(self._chat_panel)
-            splitter.setStretchFactor(0, 1)
-            splitter.setStretchFactor(1, 0)
-        elif self._chat_position == "left":
-            splitter = QSplitter(Qt.Orientation.Horizontal)
-            splitter.addWidget(self._chat_panel)
-            splitter.addWidget(self._tab_widget)
-            splitter.setStretchFactor(0, 0)
-            splitter.setStretchFactor(1, 1)
-        else:  # right
-            splitter = QSplitter(Qt.Orientation.Horizontal)
-            splitter.addWidget(self._tab_widget)
-            splitter.addWidget(self._chat_panel)
-            splitter.setStretchFactor(0, 1)
-            splitter.setStretchFactor(1, 0)
-        splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(5)
-        return splitter
-
-    def _create_main_splitter_with_sftp(self, inner_widget: QWidget) -> QSplitter:
-        """Create main splitter that includes SFTP panel."""
-        if self._sftp_position == "bottom":
-            splitter = QSplitter(Qt.Orientation.Vertical)
-            splitter.addWidget(inner_widget)
-            splitter.addWidget(self._sftp_panel)
-            splitter.setStretchFactor(0, 1)
-            splitter.setStretchFactor(1, 0)
-        elif self._sftp_position == "left":
-            splitter = QSplitter(Qt.Orientation.Horizontal)
-            splitter.addWidget(self._sftp_panel)
-            splitter.addWidget(inner_widget)
-            splitter.setStretchFactor(0, 0)
-            splitter.setStretchFactor(1, 1)
-        else:  # right
-            splitter = QSplitter(Qt.Orientation.Horizontal)
-            splitter.addWidget(inner_widget)
-            splitter.addWidget(self._sftp_panel)
-            splitter.setStretchFactor(0, 1)
-            splitter.setStretchFactor(1, 0)
-        splitter.setChildrenCollapsible(False)
-        splitter.setHandleWidth(5)
-        return splitter
-
-    def _rebuild_terminal_chat_splitter(self) -> None:
-        """Rebuild splitters when layout or orientation changes."""
-        # Disconnect and remove existing splitters
-        if hasattr(self, "_sftp_splitter") and self._sftp_splitter:
-            try:
-                self._sftp_splitter.splitterMoved.disconnect(self._on_sftp_splitter_moved)
-            except (TypeError, RuntimeError):
-                pass
-            self._sftp_splitter.setParent(None)
-
-        if hasattr(self, "_terminal_chat_splitter") and self._terminal_chat_splitter:
-            try:
-                self._terminal_chat_splitter.splitterMoved.disconnect(self._on_splitter_moved)
-            except (TypeError, RuntimeError):
-                pass
-            self._terminal_chat_splitter.setParent(None)
-
-        # Create terminal+chat splitter
-        self._terminal_chat_splitter = self._create_terminal_chat_splitter()
-        self._terminal_chat_splitter.splitterMoved.connect(self._on_splitter_moved)
-
-        # Create main splitter with SFTP
-        self._sftp_splitter = self._create_main_splitter_with_sftp(self._terminal_chat_splitter)
-        self._sftp_splitter.splitterMoved.connect(self._on_sftp_splitter_moved)
-
-        self._content_layout.addWidget(self._sftp_splitter, 1)
-        self._apply_chat_visibility()
-        self._apply_sftp_visibility()
-
-    def _apply_chat_visibility(self) -> None:
-        """Adjust splitter sizes based on chat visibility."""
-        if not self._terminal_chat_splitter:
-            return
-
-        # Hide or show panel widget
-        if hasattr(self, "_chat_panel") and self._chat_panel:
-            self._chat_panel.setVisible(self._chat_visible)
-
-        if not self._chat_visible:
-            hide_sizes = [1, 0] if self._chat_position != "left" else [0, 1]
-            self._applying_splitter_sizes = True
-            self._terminal_chat_splitter.setSizes(hide_sizes)
-            self._applying_splitter_sizes = False
-        else:
-            sizes = self._splitter_sizes.get(self._chat_position)
-            if not sizes:
-                sizes = self._get_default_splitter_sizes(self._chat_position)
-            self._applying_splitter_sizes = True
-            self._terminal_chat_splitter.setSizes(sizes)
-            self._applying_splitter_sizes = False
-
-        # Sync toolbar toggle state without re-triggering signals
-        if hasattr(self, "_toggle_chat_btn"):
-            blocked = self._toggle_chat_btn.blockSignals(True)
-            self._toggle_chat_btn.setChecked(self._chat_visible)
-            self._toggle_chat_btn.blockSignals(blocked)
-
-    def _get_default_splitter_sizes(self, position: str) -> list[int]:
-        """Default splitter sizes for each chat orientation."""
-        if position == "bottom":
-            return [700, 280]
-        if position == "left":
-            return [300, 700]
-        return [700, 300]
-
-    def _on_splitter_moved(self, pos: int, index: int) -> None:
-        """Store splitter sizes when user manually adjusts layout."""
-        if self._applying_splitter_sizes or not self._chat_visible:
-            return
-        if self._terminal_chat_splitter:
-            self._splitter_sizes[self._chat_position] = self._terminal_chat_splitter.sizes()
-
-    def _apply_sftp_visibility(self) -> None:
-        """Adjust splitter sizes based on SFTP panel visibility."""
-        if not self._sftp_splitter:
-            return
-
-        # Hide or show panel widget
-        if hasattr(self, "_sftp_panel") and self._sftp_panel:
-            self._sftp_panel.setVisible(self._sftp_visible)
-
-        if not self._sftp_visible:
-            hide_sizes = [1, 0] if self._sftp_position != "left" else [0, 1]
-            self._applying_splitter_sizes = True
-            self._sftp_splitter.setSizes(hide_sizes)
-            self._applying_splitter_sizes = False
-        else:
-            sizes = self._sftp_splitter_sizes.get(self._sftp_position)
-            if not sizes:
-                sizes = self._get_default_sftp_splitter_sizes(self._sftp_position)
-            self._applying_splitter_sizes = True
-            self._sftp_splitter.setSizes(sizes)
-            self._applying_splitter_sizes = False
-
-        # Sync toolbar toggle state without re-triggering signals
-        if hasattr(self, "_toggle_sftp_btn"):
-            blocked = self._toggle_sftp_btn.blockSignals(True)
-            self._toggle_sftp_btn.setChecked(self._sftp_visible)
-            self._toggle_sftp_btn.blockSignals(blocked)
-
-    def _get_default_sftp_splitter_sizes(self, position: str) -> list[int]:
-        """Default splitter sizes for SFTP panel."""
-        if position == "bottom":
-            return [700, 250]
-        if position == "left":
-            return [250, 700]
-        return [700, 250]
-
-    def _on_sftp_splitter_moved(self, pos: int, index: int) -> None:
-        """Store SFTP splitter sizes when user manually adjusts layout."""
-        if self._applying_splitter_sizes or not self._sftp_visible:
-            return
-        if self._sftp_splitter:
-            self._sftp_splitter_sizes[self._sftp_position] = self._sftp_splitter.sizes()
-
-    def _apply_settings_changes(self) -> None:
-        """Apply settings that might impact layout."""
-        rebuild_needed = False
-
-        new_chat_position = self._data_manager.get_chat_position()
-        if new_chat_position != self._chat_position:
-            self._chat_position = new_chat_position
-            self._update_chat_panel_style()
-            rebuild_needed = True
-
-        new_sftp_position = self._data_manager.get_sftp_position()
-        if new_sftp_position != self._sftp_position:
-            self._sftp_position = new_sftp_position
-            self._update_sftp_panel_style()
-            rebuild_needed = True
-
-        if rebuild_needed:
-            self._rebuild_terminal_chat_splitter()
+        # Layout Manager
+        self._layout_manager = LayoutManager(
+            self._content_layout,
+            self._tab_widget,
+            self._chat_panel,
+            self._sftp_panel,
+            self
+        )
+        self._layout_manager.chat_position = self._data_manager.get_chat_position()
+        self._layout_manager.sftp_position = self._data_manager.get_sftp_position()
+        self._layout_manager.rebuild_splitters()
 
     def _create_toolbar(self) -> QToolBar:
         """Create the main toolbar."""
@@ -512,32 +272,18 @@ class MainWindow(QMainWindow):
         toolbar.setIconSize(QSize(20, 20))
         toolbar.setStyleSheet("""
             QToolBar {
-                background-color: #252526;
-                border: none;
-                border-bottom: 1px solid #3c3c3c;
-                padding: 4px;
-                spacing: 4px;
+                background-color: #252526; border: none;
+                border-bottom: 1px solid #3c3c3c; padding: 4px; spacing: 4px;
             }
             QToolButton {
-                background-color: transparent;
-                border: none;
-                border-radius: 4px;
-                padding: 6px 12px;
-                color: #dcdcdc;
-                font-size: 12px;
+                background-color: transparent; border: none; border-radius: 4px;
+                padding: 6px 12px; color: #dcdcdc; font-size: 12px;
             }
-            QToolButton:hover {
-                background-color: #3c3c3c;
-            }
-            QToolButton:pressed {
-                background-color: #094771;
-            }
-            QToolButton:checked {
-                background-color: #094771;
-            }
+            QToolButton:hover { background-color: #3c3c3c; }
+            QToolButton:pressed, QToolButton:checked { background-color: #094771; }
         """)
 
-        # Hosts button - go back to hosts view
+        # Hosts button
         self._hosts_btn = QAction("Hosts", self)
         self._hosts_btn.setToolTip("Voltar para lista de hosts (Ctrl+H)")
         self._hosts_btn.setShortcut("Ctrl+H")
@@ -546,7 +292,7 @@ class MainWindow(QMainWindow):
 
         toolbar.addSeparator()
 
-        # Toggle chat button (starts unchecked/hidden)
+        # Toggle chat button
         self._toggle_chat_btn = QAction("Chat IA", self)
         self._toggle_chat_btn.setCheckable(True)
         self._toggle_chat_btn.setChecked(False)
@@ -555,7 +301,7 @@ class MainWindow(QMainWindow):
         self._toggle_chat_btn.triggered.connect(self._on_toggle_chat)
         toolbar.addAction(self._toggle_chat_btn)
 
-        # Toggle SFTP button (starts unchecked/hidden)
+        # Toggle SFTP button
         self._toggle_sftp_btn = QAction("Arquivos", self)
         self._toggle_sftp_btn.setCheckable(True)
         self._toggle_sftp_btn.setChecked(False)
@@ -564,11 +310,11 @@ class MainWindow(QMainWindow):
         self._toggle_sftp_btn.triggered.connect(self._on_toggle_sftp)
         toolbar.addAction(self._toggle_sftp_btn)
 
-        # Terminal button - return to terminal view (only visible when sessions exist)
+        # Terminal button
         self._terminal_btn = QAction("Terminal", self)
         self._terminal_btn.setToolTip("Voltar para terminal")
         self._terminal_btn.triggered.connect(self._show_terminal_view)
-        self._terminal_btn.setVisible(False)  # Hidden by default
+        self._terminal_btn.setVisible(False)
         toolbar.addAction(self._terminal_btn)
 
         toolbar.addSeparator()
@@ -587,7 +333,7 @@ class MainWindow(QMainWindow):
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
 
-        # Config button (right side)
+        # Config button
         self._config_btn = QAction("Config", self)
         self._config_btn.setToolTip("Configuracoes do aplicativo")
         self._config_btn.triggered.connect(self._on_config_clicked)
@@ -599,89 +345,49 @@ class MainWindow(QMainWindow):
         self._about_btn.triggered.connect(self._on_about_clicked)
         toolbar.addAction(self._about_btn)
 
+        # Set toggle buttons in layout manager after creation
+        if hasattr(self, '_layout_manager'):
+            self._layout_manager.set_toggle_buttons(self._toggle_chat_btn, self._toggle_sftp_btn)
+
         return toolbar
 
     def _apply_dark_theme(self) -> None:
         """Apply dark theme to the window."""
         self.setStyleSheet("""
-            QMainWindow {
-                background-color: #1e1e1e;
-            }
-            QWidget {
-                background-color: #1e1e1e;
-                color: #dcdcdc;
-            }
+            QMainWindow { background-color: #1e1e1e; }
+            QWidget { background-color: #1e1e1e; color: #dcdcdc; }
             QGroupBox {
-                background-color: #252526;
-                border: 1px solid #3c3c3c;
-                border-radius: 4px;
-                margin-top: 8px;
-                padding: 12px;
-                padding-top: 24px;
+                background-color: #252526; border: 1px solid #3c3c3c;
+                border-radius: 4px; margin-top: 8px; padding: 12px; padding-top: 24px;
                 font-weight: bold;
             }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 5px;
-                color: #dcdcdc;
-            }
+            QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 5px; color: #dcdcdc; }
             QLineEdit, QSpinBox {
-                background-color: #3c3c3c;
-                border: 1px solid #555555;
-                border-radius: 3px;
-                padding: 4px 8px;
-                color: #dcdcdc;
+                background-color: #3c3c3c; border: 1px solid #555555;
+                border-radius: 3px; padding: 4px 8px; color: #dcdcdc;
             }
-            QLineEdit:focus, QSpinBox:focus {
-                border: 1px solid #007acc;
-            }
+            QLineEdit:focus, QSpinBox:focus { border: 1px solid #007acc; }
             QPushButton {
-                background-color: #0e639c;
-                border: none;
-                border-radius: 3px;
-                padding: 6px 12px;
-                color: white;
+                background-color: #0e639c; border: none; border-radius: 3px;
+                padding: 6px 12px; color: white;
             }
-            QPushButton:hover {
-                background-color: #1177bb;
-            }
-            QPushButton:pressed {
-                background-color: #0d5a8c;
-            }
-            QPushButton:disabled {
-                background-color: #555555;
-                color: #888888;
-            }
-            QStatusBar {
-                background-color: #007acc;
-                color: white;
-            }
-            QSplitter::handle {
-                background-color: #3c3c3c;
-                height: 3px;
-            }
-            QSplitter::handle:hover {
-                background-color: #007acc;
-            }
+            QPushButton:hover { background-color: #1177bb; }
+            QPushButton:pressed { background-color: #0d5a8c; }
+            QPushButton:disabled { background-color: #555555; color: #888888; }
+            QStatusBar { background-color: #007acc; color: white; }
+            QSplitter::handle { background-color: #3c3c3c; height: 3px; }
+            QSplitter::handle:hover { background-color: #007acc; }
             QMenu {
-                background-color: #3c3c3c;
-                border: 1px solid #555555;
-                border-radius: 4px;
-                padding: 4px;
+                background-color: #3c3c3c; border: 1px solid #555555;
+                border-radius: 4px; padding: 4px;
             }
-            QMenu::item {
-                padding: 6px 24px;
-                border-radius: 2px;
-            }
-            QMenu::item:selected {
-                background-color: #094771;
-            }
+            QMenu::item { padding: 6px 24px; border-radius: 2px; }
+            QMenu::item:selected { background-color: #094771; }
         """)
 
     def _setup_connections(self) -> None:
         """Connect signals to slots."""
-        # SSH output signal - use AutoConnection since qasync integrates both loops
+        # SSH output signal
         self._ssh_output_received.connect(self._on_ssh_output_slot, Qt.ConnectionType.AutoConnection)
 
         # Unexpected disconnect signal
@@ -693,15 +399,15 @@ class MainWindow(QMainWindow):
         self._chat.conversation_changed.connect(self._on_conversation_changed)
         self._chat.new_conversation_requested.connect(self._on_new_conversation)
 
-        # Setup resize timer for terminal resize
+        # Setup resize timer
         self._resize_timer = QTimer()
         self._resize_timer.setSingleShot(True)
         self._resize_timer.timeout.connect(self._on_resize_timeout)
 
-        # Keyboard shortcuts for tabs
+        # Keyboard shortcuts
         new_tab_action = QAction("Nova Aba", self)
         new_tab_action.setShortcut("Ctrl+T")
-        new_tab_action.triggered.connect(self._on_new_tab)
+        new_tab_action.triggered.connect(lambda: self._session_manager.create_session())
         self.addAction(new_tab_action)
 
         close_tab_action = QAction("Fechar Aba", self)
@@ -711,282 +417,45 @@ class MainWindow(QMainWindow):
 
         next_tab_action = QAction("Proxima Aba", self)
         next_tab_action.setShortcut("Ctrl+Right")
-        next_tab_action.triggered.connect(self._on_next_tab)
+        next_tab_action.triggered.connect(self._session_manager.next_tab)
         self.addAction(next_tab_action)
 
         prev_tab_action = QAction("Aba Anterior", self)
         prev_tab_action.setShortcut("Ctrl+Left")
-        prev_tab_action.triggered.connect(self._on_prev_tab)
+        prev_tab_action.triggered.connect(self._session_manager.prev_tab)
         self.addAction(prev_tab_action)
 
-    def _get_active_session(self) -> Optional[TabSession]:
-        """Get the currently active tab's session."""
-        if not self._tab_widget:
-            return None
-        index = self._tab_widget.currentIndex()
-        if index < 0:
-            return None
-        widget = self._tab_widget.widget(index)
-        if not widget:
-            return None
-        # Find session by terminal widget
-        for session in self._sessions.values():
-            if session.terminal is widget:
-                return session
-        return None
+        # Set toggle buttons in layout manager
+        self._layout_manager.set_toggle_buttons(self._toggle_chat_btn, self._toggle_sftp_btn)
 
-    def _get_session_by_terminal(self, terminal: TerminalWidget) -> Optional[TabSession]:
-        """Get session by its terminal widget."""
-        for session in self._sessions.values():
-            if session.terminal is terminal:
-                return session
-        return None
-
-    def _update_ui_state(self) -> None:
-        """Update UI based on active tab connection state."""
-        session = self._get_active_session()
-        connected = session is not None and session.is_connected
-
-        # Update toolbar buttons
-        self._quick_connect_btn.setEnabled(not connected)
-
-        # Update chat state
-        self._chat.set_enabled_state(connected)
-
-        # Check if any session is connected
-        any_connected = any(s.is_connected for s in self._sessions.values())
-
-        # Show/hide Terminal button based on whether any session is connected
-        self._terminal_btn.setVisible(any_connected)
-
-        if connected and session and session.config:
-            host = session.config.host
-            self._status_bar.showMessage(f"Conectado a {host}")
-            self._status_bar.setStyleSheet("background-color: #107c10; color: white;")
-            # Show terminal view when connected
-            self._show_terminal_view()
-        else:
-            self._status_bar.showMessage("Desconectado")
-            self._status_bar.setStyleSheet("background-color: #007acc; color: white;")
-            if not any_connected:
-                # Show hosts view when no connection
-                self._show_hosts_view()
-
-    def _show_hosts_view(self) -> None:
-        """Show the hosts view."""
-        self._stacked_widget.setCurrentIndex(0)
-        self._hosts_view.refresh()
-
-    def _show_terminal_view(self) -> None:
-        """Show the terminal view."""
-        self._stacked_widget.setCurrentIndex(1)
-
-    def _create_tab_close_button(self, terminal: QWidget) -> QLabel:
-        """Create a custom close button for a tab."""
-        close_btn = QLabel("✕")
-        close_btn.setFixedSize(16, 16)
-        close_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        close_btn.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        close_btn.setStyleSheet("""
-            QLabel {
-                background-color: #c42b1c;
-                color: white;
-                border-radius: 3px;
-                font-size: 10px;
-                font-weight: bold;
-            }
-            QLabel:hover {
-                background-color: #e81123;
-            }
-        """)
-        # Find current index by terminal widget (handles tab reordering)
-        close_btn.mousePressEvent = lambda e, t=terminal: self._on_tab_close_requested(
-            self._tab_widget.indexOf(t)
-        )
-        return close_btn
-
-    def _create_new_tab(self) -> TabSession:
-        """Create a new empty terminal tab."""
-        session = TabSession()
-        session.terminal = TerminalWidget()
-
-        # Connect terminal signals for this session
-        session.terminal.input_entered.connect(
-            lambda data, s=session: self._on_terminal_input_for_session(s, data)
-        )
-        session.terminal.reconnect_requested.connect(
-            lambda s=session: self._on_reconnect_for_session(s)
-        )
-        session.terminal.prelogin_credentials.connect(
-            lambda u, p, s=session: self._on_prelogin_credentials_for_session(s, u, p)
-        )
-        session.terminal.prelogin_cancelled.connect(
-            lambda s=session: self._on_prelogin_cancelled_for_session(s)
-        )
-
-        # Add to sessions dict
-        self._sessions[session.id] = session
-
-        # Add tab to widget (no icon for new disconnected tabs)
-        index = self._tab_widget.addTab(session.terminal, session.display_name)
-
-        # Add custom close button
-        close_btn = self._create_tab_close_button(session.terminal)
-        from PySide6.QtWidgets import QTabBar
-        self._tab_widget.tabBar().setTabButton(index, QTabBar.ButtonPosition.RightSide, close_btn)
-
-        self._tab_widget.setCurrentIndex(index)
-
-        return session
-
-    def _update_tab_status(self, session: TabSession) -> None:
-        """Update tab icon and title for a session."""
-        if not session.terminal:
-            return
-
-        # Find tab index
-        for i in range(self._tab_widget.count()):
-            if self._tab_widget.widget(i) is session.terminal:
-                self._tab_widget.setTabText(i, session.display_name)
-                # Only show icon when connecting or connected (not disconnected)
-                if session.connection_status == "disconnected":
-                    self._tab_widget.setTabIcon(i, QIcon())  # Empty icon
-                else:
-                    self._tab_widget.setTabIcon(i, self._status_icons[session.connection_status])
-                break
-
-    @Slot()
-    def _on_new_tab(self) -> None:
-        """Handle new tab request (Ctrl+T or + button)."""
-        self._create_new_tab()
-
-    @Slot()
-    def _on_close_current_tab(self) -> None:
-        """Handle Ctrl+W - close current tab."""
-        index = self._tab_widget.currentIndex()
-        if index >= 0:
-            self._on_tab_close_requested(index)
-
-    @Slot(int)
-    def _on_tab_close_requested(self, index: int) -> None:
-        """Handle tab close request."""
-        widget = self._tab_widget.widget(index)
-        if not widget:
-            return
-
-        # Find session
-        session = self._get_session_by_terminal(widget)
-        if not session:
-            return
-
-        # Ask for confirmation
-        msg_box = QMessageBox(self)
-        msg_box.setWindowTitle("Fechar aba")
-        msg_box.setText("Deseja fechar esta aba?")
-        msg_box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
-        msg_box.setDefaultButton(QMessageBox.No)
-        msg_box.button(QMessageBox.Yes).setText("Sim")
-        msg_box.button(QMessageBox.No).setText("Não")
-
-        if msg_box.exec() != QMessageBox.Yes:
-            return
-
-        # Disconnect if connected
-        if session.is_connected:
-            asyncio.ensure_future(self._close_tab_async(session, index))
-        else:
-            self._remove_tab(session, index)
-
-    async def _close_tab_async(self, session: TabSession, index: int) -> None:
-        """Close tab with async disconnect."""
-        await self._disconnect_session_async(session)
-        self._remove_tab(session, index)
-
-    def _remove_tab(self, session: TabSession, index: int) -> None:
-        """Remove a tab from the widget and cleanup."""
-        # Remove from sessions dict
-        if session.id in self._sessions:
-            del self._sessions[session.id]
-
-        # Remove tab
-        self._tab_widget.removeTab(index)
-
-        # If no tabs left, create a new empty one
-        if self._tab_widget.count() == 0:
-            self._create_new_tab()
-        else:
-            self._update_ui_state()
-
-    @Slot(int)
-    def _on_tab_changed(self, index: int) -> None:
-        """Handle tab change - update UI state and chat context."""
-        self._update_ui_state()
-
-        # Restore chat state for the new tab
-        session = self._get_active_session()
-        if session:
-            self._restore_chat_for_session(session)
-            if session.terminal:
-                session.terminal.set_focus()
-
-            # Update SFTP browser if visible
-            if self._sftp_visible:
-                if session.is_connected and session.ssh_session:
-                    asyncio.ensure_future(self._connect_sftp_for_session(session))
-                else:
-                    asyncio.ensure_future(self._sftp_browser.disconnect())
-                    self._sftp_browser.clear()
-
-    @Slot()
-    def _on_next_tab(self) -> None:
-        """Switch to next tab (Ctrl+Right)."""
-        if not self._tab_widget or self._tab_widget.count() <= 1:
-            return
-        current = self._tab_widget.currentIndex()
-        next_index = (current + 1) % self._tab_widget.count()
-        self._tab_widget.setCurrentIndex(next_index)
-
-    @Slot()
-    def _on_prev_tab(self) -> None:
-        """Switch to previous tab (Ctrl+Left)."""
-        if not self._tab_widget or self._tab_widget.count() <= 1:
-            return
-        current = self._tab_widget.currentIndex()
-        prev_index = (current - 1) % self._tab_widget.count()
-        self._tab_widget.setCurrentIndex(prev_index)
+    # === Session and Connection Handlers ===
 
     def _on_terminal_input_for_session(self, session: TabSession, data: str) -> None:
         """Handle input from a specific terminal session."""
         if not session.ssh_session:
             return
 
-        # Check if waiting for authentication input
         if session.ssh_session.waiting_for_auth:
             session.ssh_session.provide_auth_input(data)
             return
 
         if session.ssh_session.is_connected:
             asyncio.ensure_future(session.ssh_session.send_input(data))
-
-            # Track input for cd command detection
-            self._track_terminal_input(session, data)
+            self._sftp_coordinator.track_terminal_input(session, data)
 
     def _on_reconnect_for_session(self, session: TabSession) -> None:
         """Handle reconnect request for a specific session."""
-        # Check if we have pending connection (from cancelled pre-login or auth failure)
         if session.pending_connection:
             if session.terminal:
                 cols, rows = session.terminal.get_terminal_size()
                 session.pending_connection["term_width"] = cols
                 session.pending_connection["term_height"] = rows
 
-            # Check if we already have username (retry password scenario)
             has_username = bool(session.pending_connection.get("username"))
             if session.terminal:
                 session.terminal.start_prelogin(need_username=not has_username, need_password=True)
             return
 
-        # Otherwise try to reconnect with last successful config
         if session.config:
             if session.terminal:
                 cols, rows = session.terminal.get_terminal_size()
@@ -995,22 +464,18 @@ class MainWindow(QMainWindow):
             asyncio.ensure_future(self._connect_session_async(session, session.config))
 
     def _on_prelogin_credentials_for_session(self, session: TabSession, username: str, password: str) -> None:
-        """Handle credentials received from terminal pre-login mode for a session."""
+        """Handle credentials from terminal pre-login mode."""
         if not session.pending_connection:
             return
 
-        # Use username from pending_connection if available (retry scenario)
-        # Otherwise use the username just entered
         final_username = session.pending_connection.get("username") or username
 
         if not final_username:
-            # User cancelled or empty username
             session.pending_connection = None
             if session.terminal:
                 session.terminal.clear()
             return
 
-        # Build config with collected credentials
         config = SSHConfig(
             host=session.pending_connection["host"],
             port=session.pending_connection["port"],
@@ -1021,56 +486,171 @@ class MainWindow(QMainWindow):
             term_height=session.pending_connection["term_height"],
         )
 
-        # Keep pending_connection for retry on auth failure
         asyncio.ensure_future(self._connect_session_async(session, config))
 
     def _on_prelogin_cancelled_for_session(self, session: TabSession) -> None:
-        """Handle pre-login cancellation for a session."""
-        # Keep pending_connection so R can retry
-        pass
+        """Handle pre-login cancellation."""
+        pass  # Keep pending_connection for R retry
 
-    def _refresh_hosts_list(self) -> None:
-        """Refresh the hosts view."""
-        self._hosts_view.refresh()
+    def _on_tab_changed(self, session: TabSession) -> None:
+        """Handle tab change."""
+        self._update_ui_state()
+
+        if session:
+            self._chat_coordinator.restore_chat_for_session(session)
+            if session.terminal:
+                session.terminal.set_focus()
+
+            if self._layout_manager.sftp_visible:
+                if session.is_connected and session.ssh_session:
+                    asyncio.ensure_future(self._sftp_coordinator.connect_for_session(session))
+                else:
+                    asyncio.ensure_future(self._sftp_coordinator.disconnect())
 
     @Slot()
-    def _on_toggle_chat(self) -> None:
-        """Toggle chat panel visibility."""
-        self._chat_visible = not self._chat_visible
-        self._apply_chat_visibility()
-        if self._chat_visible:
-            self._chat.focus_input()
+    def _on_close_current_tab(self) -> None:
+        """Handle Ctrl+W - close current tab."""
+        index = self._tab_widget.currentIndex()
+        if index >= 0:
+            self._session_manager._on_tab_close_requested(index)
 
-    @Slot()
-    def _on_toggle_sftp(self) -> None:
-        """Toggle SFTP panel visibility."""
-        self._sftp_visible = not self._sftp_visible
-        self._apply_sftp_visibility()
+    # === SSH Connection ===
 
-        # Connect SFTP if showing and session is connected
-        if self._sftp_visible:
-            session = self._get_active_session()
-            if session and session.is_connected and session.ssh_session:
-                asyncio.ensure_future(self._connect_sftp_for_session(session))
-
-    async def _connect_sftp_for_session(self, session: TabSession) -> None:
-        """Connect SFTP browser to the session's SSH connection."""
-        if not session.ssh_session or not session.ssh_session.is_connected:
+    async def _connect_session_async(self, session: TabSession, config: SSHConfig) -> None:
+        """Async connection handler for a session."""
+        if not session.terminal:
             return
 
-        try:
-            # Get the underlying SSH connection
-            ssh_conn = session.ssh_session._conn
-            if ssh_conn:
-                await self._sftp_browser.connect(ssh_conn)
-                logger.info("SFTP connected for session")
+        self._quick_connect_btn.setEnabled(False)
+        session.connection_status = "connecting"
+        self._session_manager.update_tab_status(session)
+        self._status_bar.showMessage(f"Conectando a {config.host}...")
+        self._status_bar.setStyleSheet("background-color: #ca5010; color: white;")
 
-                # Sync with terminal cwd if follow mode is enabled
-                if self._sftp_browser.follow_terminal:
-                    await self._sync_sftp_with_terminal_cwd()
-        except Exception as e:
-            logger.error(f"Failed to connect SFTP: {e}")
-            self._status_bar.showMessage(f"Erro SFTP: {e}", 5000)
+        # Port knocking
+        if session.port_knocking:
+            await self._connection_manager.perform_port_knock(config.host, session.port_knocking)
+
+        success = await self._connection_manager.connect(session, config)
+
+        if success:
+            self._connection_manager.create_agent_for_session(
+                session,
+                on_thinking=lambda status: self._chat.set_status(status),
+                on_usage_update=lambda stats: self._chat.update_cost(
+                    stats.total_cost, stats.prompt_tokens, stats.completion_tokens
+                )
+            )
+            self._session_manager.update_tab_status(session)
+            self._chat_coordinator.restore_chat_for_session(session)
+            self._update_ui_state()
+        else:
+            self._session_manager.update_tab_status(session)
+            if session.connection_status == "disconnected" and not session.pending_connection:
+                # Connection failed completely
+                QMessageBox.critical(
+                    self,
+                    "Erro de Conexao",
+                    f"Falha ao conectar em {config.host}"
+                )
+            self._update_ui_state()
+
+    async def _close_tab_async(self, session: TabSession, index: int) -> None:
+        """Close tab with async disconnect."""
+        await self._connection_manager.disconnect(session, self._chat_coordinator.agent_task)
+        self._session_manager.remove_session(session, index)
+        self._update_ui_state()
+
+    async def _disconnect_session_async(self, session: TabSession) -> None:
+        """Async disconnection handler."""
+        active_session = self._session_manager.get_active_session()
+
+        await self._connection_manager.disconnect(session, self._chat_coordinator.agent_task)
+
+        if active_session and active_session.id == session.id:
+            await self._sftp_coordinator.disconnect()
+
+        self._session_manager.update_tab_status(session)
+        self._update_ui_state()
+
+    # === SSH Output Handling ===
+
+    def _on_ssh_output_for_session(self, session: TabSession, data: str) -> None:
+        """Handle output received from SSH session."""
+        self._ssh_output_received.emit(session.id, data)
+
+    @Slot(str, str)
+    def _on_ssh_output_slot(self, tab_id: str, data: str) -> None:
+        """Buffer SSH output and process in batches."""
+        session = self._session_manager.get_session(tab_id)
+        if not session or not session.terminal:
+            return
+
+        if session.terminal._disconnected_mode:
+            return
+
+        session.output_buffer.append(data)
+        if not self._output_timer.isActive():
+            self._output_timer.start(10)
+
+    def _flush_output_buffer(self) -> None:
+        """Flush buffered output to all terminals."""
+        for session in self._session_manager.sessions.values():
+            if not session.output_buffer or not session.terminal:
+                continue
+            if session.terminal._disconnected_mode:
+                session.output_buffer.clear()
+                continue
+            combined = ''.join(session.output_buffer)
+            session.output_buffer.clear()
+            if combined:
+                session.terminal.append_output(combined)
+
+    @Slot(str)
+    def _on_unexpected_disconnect(self, tab_id: str) -> None:
+        """Handle unexpected disconnection from SSH session."""
+        session = self._session_manager.get_session(tab_id)
+        if not session:
+            return
+
+        self._connection_manager.handle_unexpected_disconnect(session, self._chat_coordinator.agent_task)
+
+        self._output_timer.stop()
+        self._session_manager.update_tab_status(session)
+
+        active_session = self._session_manager.get_active_session()
+        if active_session and active_session.id == tab_id:
+            asyncio.ensure_future(self._sftp_coordinator.disconnect())
+
+        self._update_ui_state()
+
+    # === Chat Handlers ===
+
+    @Slot(str, bool)
+    def _on_chat_message(self, message: str, web_search: bool = False) -> None:
+        """Handle message from chat widget."""
+        session = self._session_manager.get_active_session()
+        self._chat_coordinator.start_message_processing(session, message, web_search)
+
+    @Slot()
+    def _on_stop_agent(self) -> None:
+        """Handle stop button click in chat."""
+        session = self._session_manager.get_active_session()
+        self._chat_coordinator.stop_agent(session)
+
+    @Slot(str)
+    def _on_conversation_changed(self, conv_id: str) -> None:
+        """Handle conversation selection from dropdown."""
+        session = self._session_manager.get_active_session()
+        self._chat_coordinator.on_conversation_changed(session, conv_id)
+
+    @Slot()
+    def _on_new_conversation(self) -> None:
+        """Handle new conversation request."""
+        session = self._session_manager.get_active_session()
+        self._chat_coordinator.on_new_conversation(session)
+
+    # === SFTP Handlers ===
 
     @Slot(list)
     def _on_sftp_download_requested(self, files) -> None:
@@ -1078,15 +658,8 @@ class MainWindow(QMainWindow):
         if not files:
             return
 
-        # Use Downloads folder as default
         downloads_dir = QStandardPaths.writableLocation(QStandardPaths.StandardLocation.DownloadLocation)
-
-        # Ask for destination folder (without ShowDirsOnly for better Windows compatibility)
-        dest_dir = QFileDialog.getExistingDirectory(
-            self,
-            "Selecionar pasta de destino",
-            downloads_dir
-        )
+        dest_dir = QFileDialog.getExistingDirectory(self, "Selecionar pasta de destino", downloads_dir)
 
         if not dest_dir:
             return
@@ -1095,9 +668,8 @@ class MainWindow(QMainWindow):
 
     async def _download_files_async(self, files, dest_dir: str) -> None:
         """Download files to local directory."""
-        downloaded = await self._sftp_browser.download_files(
-            files,
-            dest_dir,
+        downloaded = await self._sftp_coordinator.download_files(
+            files, dest_dir,
             progress_callback=lambda msg: self._status_bar.showMessage(msg)
         )
         if downloaded > 0:
@@ -1110,233 +682,117 @@ class MainWindow(QMainWindow):
 
     async def _upload_files_async(self, local_files: list, remote_dir: str) -> None:
         """Upload files to remote directory."""
-        uploaded = await self._sftp_browser.upload_files(
-            local_files,
-            remote_dir,
+        uploaded = await self._sftp_coordinator.upload_files(
+            local_files, remote_dir,
             progress_callback=lambda msg: self._status_bar.showMessage(msg)
         )
         if uploaded > 0:
             self._status_bar.showMessage(f"{uploaded} arquivo(s) enviado(s)", 3000)
 
     @Slot(str)
-    def _on_sftp_status(self, message: str) -> None:
-        """Handle status message from SFTP browser."""
-        self._status_bar.showMessage(message, 3000)
-
-    async def _sync_sftp_with_terminal_cwd(self) -> None:
-        """Sync SFTP browser with terminal's current working directory."""
-        # Check if follow mode is enabled
-        if not self._sftp_visible:
-            logger.debug("SFTP sync skipped: panel not visible")
-            return
-        if not self._sftp_browser.follow_terminal:
-            logger.debug("SFTP sync skipped: follow terminal disabled")
-            return
-
-        # Check if we have an active connected session
-        session = self._get_active_session()
-        if not session or not session.is_connected or not session.ssh_session:
-            logger.debug("SFTP sync skipped: no active session")
-            return
-
-        try:
-            # Get current working directory from terminal
-            cwd = await session.ssh_session.execute_command("pwd", timeout=5.0)
-            cwd = cwd.strip()
-            logger.debug(f"Terminal cwd: {cwd}")
-
-            if cwd and cwd.startswith("/"):
-                # Update file browser if path changed
-                if cwd != self._sftp_browser.current_path:
-                    logger.debug(f"Navigating SFTP to: {cwd}")
-                    self._sftp_browser.set_path(cwd)
-        except Exception as e:
-            logger.debug(f"Could not get terminal cwd: {e}")
-
-    def _trigger_sftp_follow_sync(self) -> None:
-        """Trigger SFTP sync after a short delay (debounced)."""
-        if not hasattr(self, "_sftp_sync_timer"):
-            self._sftp_sync_timer = QTimer()
-            self._sftp_sync_timer.setSingleShot(True)
-            self._sftp_sync_timer.timeout.connect(self._do_sftp_sync)
-
-        # Debounce: wait 500ms after last input before syncing
-        self._sftp_sync_timer.start(500)
-
-    def _do_sftp_sync(self) -> None:
-        """Execute SFTP sync (called by timer)."""
-        asyncio.ensure_future(self._sync_sftp_with_terminal_cwd())
-
-    def _track_terminal_input(self, session: TabSession, data: str) -> None:
-        """Track terminal input to detect cd commands."""
-        # Initialize input buffer if needed
-        if not hasattr(session, '_input_buffer'):
-            session._input_buffer = ""
-            session._current_cwd = "~"  # Start at home
-
-        # Handle special characters
-        if data == '\x7f' or data == '\b':  # Backspace
-            if session._input_buffer:
-                session._input_buffer = session._input_buffer[:-1]
-            return
-        elif data == '\x03':  # Ctrl+C
-            session._input_buffer = ""
-            return
-        elif data == '\x15':  # Ctrl+U (clear line)
-            session._input_buffer = ""
-            return
-
-        # Check for Enter key
-        if '\r' in data or '\n' in data:
-            command = session._input_buffer.strip()
-            session._input_buffer = ""
-
-            # Detect cd command
-            if command:
-                self._process_cd_command(session, command)
-        else:
-            # Accumulate input
-            session._input_buffer += data
-
-    def _process_cd_command(self, session: TabSession, command: str) -> None:
-        """Process a command to detect cd and update SFTP path."""
-        import re
-
-        # Match cd commands: cd, cd -, cd ~, cd /path, cd path, cd "path with spaces"
-        cd_pattern = r'^cd\s*(.*)$'
-        match = re.match(cd_pattern, command)
-
-        if not match:
-            return
-
-        path_arg = match.group(1).strip()
-
-        # Remove quotes if present
-        if path_arg.startswith('"') and path_arg.endswith('"'):
-            path_arg = path_arg[1:-1]
-        elif path_arg.startswith("'") and path_arg.endswith("'"):
-            path_arg = path_arg[1:-1]
-
-        # Determine new path
-        current = getattr(session, '_current_cwd', '~')
-
-        if not path_arg or path_arg == '~':
-            new_path = '~'
-        elif path_arg == '-':
-            # cd - : go to previous directory (not tracked, skip)
-            return
-        elif path_arg.startswith('/'):
-            # Absolute path
-            new_path = path_arg
-        elif path_arg == '..':
-            # Parent directory
-            if current == '~' or current == '/':
-                new_path = '/'
-            else:
-                from pathlib import PurePosixPath
-                new_path = str(PurePosixPath(current).parent)
-        elif path_arg.startswith('~/'):
-            # Home-relative path
-            new_path = path_arg
-        else:
-            # Relative path
-            from pathlib import PurePosixPath
-            if current == '~':
-                new_path = f"~/{path_arg}"
-            else:
-                new_path = str(PurePosixPath(current) / path_arg)
-
-        # Normalize path (remove . and ..)
-        if new_path not in ('~', '/') and not new_path.startswith('~/'):
-            parts = []
-            for part in new_path.split('/'):
-                if part == '..':
-                    if parts:
-                        parts.pop()
-                elif part and part != '.':
-                    parts.append(part)
-            new_path = '/' + '/'.join(parts) if parts else '/'
-
-        # Don't update _current_cwd here - it will be updated by _on_sftp_directory_changed
-        # when SFTP navigation succeeds
-        logger.debug(f"Detected cd to: {new_path}")
-
-        # Update SFTP browser if follow mode is enabled
-        self._trigger_sftp_path_update(new_path)
-
-    def _trigger_sftp_path_update(self, path: str) -> None:
-        """Update SFTP browser to the given path if follow mode is enabled."""
-        if not self._sftp_visible:
-            return
-        if not self._sftp_browser.follow_terminal:
-            return
-
-        # Update file browser path
-        if path != self._sftp_browser.current_path:
-            logger.debug(f"Navigating SFTP to: {path}")
-            self._sftp_browser.set_path(path)
-
-    @Slot(str)
     def _on_sftp_directory_changed(self, path: str) -> None:
-        """Handle SFTP directory change - sync session's _current_cwd."""
-        session = self._get_active_session()
+        """Handle SFTP directory change."""
+        session = self._session_manager.get_active_session()
         if session:
-            # Update the tracked cwd when SFTP successfully navigates
             session._current_cwd = path
-            logger.debug(f"Session cwd synced to: {path}")
+
+    # === UI State and Navigation ===
+
+    def _update_ui_state(self) -> None:
+        """Update UI based on active tab connection state."""
+        session = self._session_manager.get_active_session()
+        connected = session is not None and session.is_connected
+
+        self._quick_connect_btn.setEnabled(not connected)
+        self._chat.set_enabled_state(connected)
+
+        any_connected = self._session_manager.has_connected_sessions()
+        self._terminal_btn.setVisible(any_connected)
+
+        if connected and session and session.config:
+            host = session.config.host
+            self._status_bar.showMessage(f"Conectado a {host}")
+            self._status_bar.setStyleSheet("background-color: #107c10; color: white;")
+            self._show_terminal_view()
+        else:
+            self._status_bar.showMessage("Desconectado")
+            self._status_bar.setStyleSheet("background-color: #007acc; color: white;")
+            if not any_connected:
+                self._show_hosts_view()
+
+    def _show_hosts_view(self) -> None:
+        """Show the hosts view."""
+        self._stacked_widget.setCurrentIndex(0)
+        self._hosts_view.refresh()
+
+    def _show_terminal_view(self) -> None:
+        """Show the terminal view."""
+        self._stacked_widget.setCurrentIndex(1)
+
+    def _refresh_hosts_list(self) -> None:
+        """Refresh the hosts view."""
+        self._hosts_view.refresh()
+
+    # === Toggle Handlers ===
 
     @Slot()
-    def _on_config_clicked(self) -> None:
-        """Handle config button click - show settings dialog."""
-        dialog = SettingsDialog(parent=self)
-        result = dialog.exec()
-        if result == QDialog.DialogCode.Accepted:
-            self._apply_settings_changes()
-
-    def _on_about_clicked(self) -> None:
-        """Handle about button click - show about dialog."""
-        dialog = AboutDialog(parent=self)
-        dialog.exec()
+    def _on_toggle_chat(self) -> None:
+        """Toggle chat panel visibility."""
+        visible = self._layout_manager.toggle_chat()
+        if visible:
+            self._chat.focus_input()
 
     @Slot()
-    def _on_quick_connect(self) -> None:
-        """Handle quick connect button click."""
-        session = self._get_active_session()
+    def _on_toggle_sftp(self) -> None:
+        """Toggle SFTP panel visibility."""
+        visible = self._layout_manager.toggle_sftp()
+        self._sftp_coordinator.visible = visible
 
-        # Check if active tab is already connected
+        if visible:
+            session = self._session_manager.get_active_session()
+            if session and session.is_connected and session.ssh_session:
+                asyncio.ensure_future(self._sftp_coordinator.connect_for_session(session))
+
+    # === Host Operations ===
+
+    def _connect_to_host(self, host_id: str, specific_ip: str = "") -> None:
+        """Connect to a saved host."""
+        host = self._data_manager.get_host_by_id(host_id)
+        if not host:
+            return
+
+        session = self._session_manager.get_active_session()
+
         if session and session.is_connected:
-            reply = QMessageBox.question(
-                self,
-                "Ja conectado",
-                "Deseja desconectar da sessao atual?",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
-            asyncio.ensure_future(self._disconnect_session_async(session))
+            session = self._session_manager.create_session()
 
-        dialog = QuickConnectDialog(parent=self)
-        if dialog.exec():
-            data = dialog.get_connection_data()
+        if not session:
+            session = self._session_manager.create_session()
 
-            # Use unified connection method with active session
-            self._initiate_connection_for_session(
-                session=session,
-                host=data["host"],
-                port=data["port"],
-                username=data["username"],
-                password=data["password"],
-                terminal_type=data["terminal_type"],
-                device_type=data.get("device_type"),
-                host_id=None  # Quick connect has no saved host ID
-            )
+        password = self._data_manager.get_password(host_id)
+        target_ip = specific_ip if specific_ip else host.host
 
-    @Slot()
-    def _on_add_host_clicked(self) -> None:
-        """Handle add host button click."""
-        dialog = HostDialog(self._data_manager, parent=self)
-        if dialog.exec():
-            self._refresh_hosts_list()
+        session.fallback_hosts = host.hosts if not specific_ip and len(host.hosts) > 1 else []
+        session.current_host_index = 0
+
+        self._initiate_connection_for_session(
+            session=session,
+            host=target_ip,
+            port=host.port,
+            username=host.get_effective_username(),
+            password=password or "",
+            terminal_type=host.terminal_type,
+            device_type=host.device_type,
+            host_id=host_id,
+            host_name=host.name,
+            manufacturer=host.manufacturer,
+            os_version=host.os_version,
+            functions=host.functions,
+            groups=host.groups,
+            tags=host.tags,
+            notes=host.notes,
+            port_knocking=host.port_knocking
+        )
 
     def _initiate_connection_for_session(
         self,
@@ -1357,33 +813,9 @@ class MainWindow(QMainWindow):
         notes: Optional[str] = None,
         port_knocking: Optional[list] = None
     ) -> None:
-        """
-        Unified connection method for both saved hosts and quick connect.
-
-        Handles:
-        - Checking if credentials need to be prompted via terminal
-        - Setting up proactive terminal response for MikroTik
-        - Starting pre-login mode or direct connection
-
-        Args:
-            session: The tab session to connect (uses active if None)
-            host: Host address or IP
-            port: SSH port
-            username: Username (empty string triggers pre-login prompt)
-            password: Password (empty string with username uses keyboard-interactive)
-            terminal_type: Terminal type (xterm, xterm-256color, vt100)
-            device_type: Device type for AI context (Linux, MikroTik, etc.)
-            host_id: Host ID for saved hosts (None for quick connect)
-            host_name: Display name for saved hosts
-            manufacturer: Device manufacturer
-            os_version: Operating system and version
-            functions: Device functions/roles
-            groups: Device groups
-            tags: Device tags
-            notes: Additional notes about the device
-        """
+        """Unified connection method."""
         if session is None:
-            session = self._get_active_session()
+            session = self._session_manager.get_active_session()
         if session is None or session.terminal is None:
             return
 
@@ -1400,11 +832,9 @@ class MainWindow(QMainWindow):
         session.notes = notes
         session.port_knocking = port_knocking
 
-        # Check if we need to ask for credentials in terminal (like PuTTY)
         need_username = not username
 
         if need_username:
-            # Store pending connection data and start pre-login mode
             session.pending_connection = {
                 "host": host,
                 "port": port,
@@ -1416,7 +846,6 @@ class MainWindow(QMainWindow):
             self._show_terminal_view()
             return
 
-        # Has username - connect directly (password via keyboard-interactive if needed)
         config = SSHConfig(
             host=host,
             port=port,
@@ -1428,62 +857,6 @@ class MainWindow(QMainWindow):
         )
 
         asyncio.ensure_future(self._connect_session_async(session, config))
-
-    def _connect_to_host(self, host_id: str, specific_ip: str = "") -> None:
-        """Connect to a saved host. Opens new tab if current is connected.
-
-        Args:
-            host_id: ID of the host to connect to
-            specific_ip: Specific IP to use. If empty, will try all IPs with fallback.
-        """
-        host = self._data_manager.get_host_by_id(host_id)
-        if not host:
-            return
-
-        session = self._get_active_session()
-
-        # If current tab is connected, create a new tab for the new connection
-        if session and session.is_connected:
-            session = self._create_new_tab()
-
-        if not session:
-            session = self._create_new_tab()
-
-        # Get saved password if available (may be None)
-        password = self._data_manager.get_password(host_id)
-
-        # Determine which IP(s) to try
-        if specific_ip:
-            # Specific IP selected from submenu - use only this IP
-            target_ip = specific_ip
-        else:
-            # No specific IP - use first IP (fallback will be handled in connection logic)
-            target_ip = host.host
-
-        # Store all hosts for fallback if not using specific IP
-        session.fallback_hosts = host.hosts if not specific_ip and len(host.hosts) > 1 else []
-        session.current_host_index = 0
-
-        # Use unified connection method
-        # get_effective_username() applies +ct suffix for MikroTik if configured (deprecated)
-        self._initiate_connection_for_session(
-            session=session,
-            host=target_ip,
-            port=host.port,
-            username=host.get_effective_username(),
-            password=password or "",
-            terminal_type=host.terminal_type,
-            device_type=host.device_type,
-            host_id=host_id,
-            host_name=host.name,
-            manufacturer=host.manufacturer,
-            os_version=host.os_version,
-            functions=host.functions,
-            groups=host.groups,
-            tags=host.tags,
-            notes=host.notes,
-            port_knocking=host.port_knocking
-        )
 
     def _edit_host(self, host_id: str) -> None:
         """Edit a saved host."""
@@ -1512,138 +885,29 @@ class MainWindow(QMainWindow):
             self._data_manager.delete_host(host_id)
             self._refresh_hosts_list()
 
-    def _create_agent_for_session(self, session: TabSession) -> None:
-        """Create AI agent for a session's SSH connection."""
-        if not session.ssh_session or not session.terminal:
-            return
-
-        async def execute_command(cmd: str) -> str:
-            if session.ssh_session and session.ssh_session.is_connected:
-                return await session.ssh_session.execute_command(cmd)
-            raise RuntimeError("Not connected")
-
-        def on_command_executed(cmd: str, output: str) -> None:
-            def _normalize_for_terminal(text: str) -> str:
-                # Convert lone LF or CR into CRLF so the terminal cursor resets to column 0.
-                text = text.replace("\r\n", "\n").replace("\r", "\n")
-                return text.replace("\n", "\r\n")
-
-            # Ensure injected command lines respect carriage return to avoid offsetting columns
-            if session.terminal:
-                session.terminal.append_output(f"\r\n$ {cmd}\r\n")
-                session.terminal.append_output(_normalize_for_terminal(output) + "\r\n")
-
-            # Send Enter to PTY to force shell to show prompt again
-            if session.ssh_session and session.ssh_session.is_connected:
-                asyncio.create_task(session.ssh_session.send_input("\r"))
-
-        def on_thinking(status: str) -> None:
-            self._chat.set_status(status)
-
-        def on_usage_update(stats: UsageStats) -> None:
-            self._chat.update_cost(
-                stats.total_cost,
-                stats.prompt_tokens,
-                stats.completion_tokens
-            )
-
-        # Get connection info from config
-        host_address = session.config.host if session.config else None
-        host_port = session.config.port if session.config else None
-        username = session.config.username if session.config else None
-
-        session.agent = create_agent(
-            execute_command=execute_command,
-            on_command_executed=on_command_executed,
-            on_thinking=on_thinking,
-            on_usage_update=on_usage_update,
-            # Host connection info
-            host_name=session.host_name,
-            host_address=host_address,
-            host_port=host_port,
-            username=username,
-            # Device metadata
-            device_type=session.device_type,
-            manufacturer=session.manufacturer,
-            os_version=session.os_version,
-            functions=session.functions,
-            groups=session.groups,
-            tags=session.tags,
-            notes=session.notes
-        )
-
-    def _create_disconnect_callback_for_session(self, session: TabSession):
-        """Create a disconnect callback for a specific session."""
-        def callback():
-            self._unexpected_disconnect.emit(session.id)
-        return callback
-
-    async def _perform_port_knock(self, host: str, sequence: list) -> None:
-        """Execute port knocking sequence (fire and forget)."""
-        import socket
-        for entry in sequence:
-            try:
-                protocol = entry.get("protocol", "tcp")
-                port = entry.get("port")
-                if not port:
-                    continue
-                sock_type = socket.SOCK_STREAM if protocol == "tcp" else socket.SOCK_DGRAM
-                sock = socket.socket(socket.AF_INET, sock_type)
-                sock.settimeout(0.1)
-                if protocol == "tcp":
-                    try:
-                        sock.connect((host, port))
-                    except (socket.timeout, ConnectionRefusedError, OSError):
-                        pass
-                else:
-                    sock.sendto(b"", (host, port))
-                sock.close()
-            except Exception:
-                pass  # Fire and forget - ignore all errors
-        logger.debug(f"Port knocking completed for {host}: {sequence}")
+    # === External App Launchers ===
 
     def _launch_winbox(self, host_id: str, specific_ip: str = "") -> None:
-        """Launch Winbox for the specified host.
-
-        Args:
-            host_id: ID of the host
-            specific_ip: Specific IP to use. If empty, uses first IP.
-        """
-        # Check if Winbox path is configured
+        """Launch Winbox for the specified host."""
         winbox_path = self._data_manager.settings.winbox_path
         if not winbox_path:
-            QMessageBox.warning(
-                self, "Winbox",
-                "Caminho do Winbox nao configurado.\n"
-                "Configure em Configuracoes > Winbox."
-            )
+            QMessageBox.warning(self, "Winbox", "Caminho do Winbox nao configurado.\nConfigure em Configuracoes > Winbox.")
             return
 
         if not Path(winbox_path).exists():
-            QMessageBox.warning(
-                self, "Winbox",
-                f"Executavel nao encontrado:\n{winbox_path}"
-            )
+            QMessageBox.warning(self, "Winbox", f"Executavel nao encontrado:\n{winbox_path}")
             return
 
-        # Get host data
         host = self._data_manager.get_host_by_id(host_id)
         if not host:
             return
 
-        # Determine which IP to use
         target_ip = specific_ip if specific_ip else host.host
-
-        # Winbox port (0 = use default 8291)
         winbox_port = host.winbox_port if host.winbox_port else 8291
-
-        # Decrypt password
         password = self._data_manager.get_password(host_id)
 
-        # Port knocking before opening Winbox
         if host.port_knocking:
-            asyncio.create_task(self._perform_port_knock(target_ip, host.port_knocking))
-            # Small delay for port knocking to complete
+            asyncio.create_task(self._connection_manager.perform_port_knock(target_ip, host.port_knocking))
             QTimer.singleShot(500, lambda: self._execute_winbox(
                 winbox_path, target_ip, winbox_port, host.username, password or ""
             ))
@@ -1651,58 +915,44 @@ class MainWindow(QMainWindow):
             self._execute_winbox(winbox_path, target_ip, winbox_port, host.username, password or "")
 
     def _format_host_port(self, host: str, port: int) -> str:
-        """Format host:port, handling IPv6 addresses with brackets."""
-        # Check if it's an IPv6 address (contains : but not already bracketed)
+        """Format host:port, handling IPv6 addresses."""
         if ':' in host and not host.startswith('['):
             return f"[{host}]:{port}"
         return f"{host}:{port}"
 
     def _execute_winbox(self, winbox_path: str, host: str, port: int, user: str, password: str) -> None:
         """Execute Winbox with parameters."""
-        # Format: winbox.exe ip:port user password
         host_port = self._format_host_port(host, port)
         args = [winbox_path, host_port, user, password]
 
         try:
             subprocess.Popen(args, creationflags=subprocess.DETACHED_PROCESS)
             self._status_bar.showMessage(f"Winbox iniciado para {host_port}", 3000)
-            logger.info(f"Winbox launched for {host_port}")
         except Exception as e:
             logger.error(f"Failed to launch Winbox: {e}")
             QMessageBox.critical(self, "Erro", f"Erro ao iniciar Winbox:\n{e}")
 
     def _open_web_access(self, host_id: str, specific_ip: str = "") -> None:
-        """Open web browser for the specified host.
-
-        Args:
-            host_id: ID of the host
-            specific_ip: Specific IP to use. If empty, uses first IP.
-        """
-        # Get host data
+        """Open web browser for the specified host."""
         host = self._data_manager.get_host_by_id(host_id)
         if not host:
             return
 
-        # Determine which IP to use
         target_ip = specific_ip if specific_ip else host.host
 
-        # Build URL - handle IPv6 addresses with brackets
         protocol = "https" if host.https_enabled else "http"
         port = host.http_port
 
-        # Format host for URL (IPv6 needs brackets)
         if ':' in target_ip and not target_ip.startswith('['):
             formatted_host = f"[{target_ip}]"
         else:
             formatted_host = target_ip
 
-        # Only add port to URL if not default
         if (protocol == "http" and port == 80) or (protocol == "https" and port == 443):
             url = f"{protocol}://{formatted_host}"
         else:
             url = f"{protocol}://{formatted_host}:{port}"
 
-        # Check if should use auto-login
         web_password = self._data_manager.get_web_password(host)
         should_autologin = (
             host.manufacturer in ["MikroTik", "Zabbix", "Proxmox"] and
@@ -1710,31 +960,19 @@ class MainWindow(QMainWindow):
             web_password
         )
 
-        # Port knocking before opening browser
         if host.port_knocking:
-            asyncio.create_task(self._perform_port_knock(target_ip, host.port_knocking))
-            # Small delay for port knocking to complete
-            QTimer.singleShot(500, lambda: self._execute_web_access(
-                url, host, should_autologin, web_password
-            ))
+            asyncio.create_task(self._connection_manager.perform_port_knock(target_ip, host.port_knocking))
+            QTimer.singleShot(500, lambda: self._execute_web_access(url, host, should_autologin, web_password))
         else:
             self._execute_web_access(url, host, should_autologin, web_password)
 
-    def _execute_web_access(
-        self,
-        url: str,
-        host=None,
-        should_autologin: bool = False,
-        web_password: str = None
-    ) -> None:
+    def _execute_web_access(self, url: str, host=None, should_autologin: bool = False, web_password: str = None) -> None:
         """Open URL in default browser, with optional auto-login."""
         try:
             if should_autologin and host and web_password:
                 self._status_bar.showMessage(f"Auto-login em {host.manufacturer}...", 5000)
                 try:
-                    from core.web_autologin import (
-                        autologin_mikrotik, autologin_zabbix, autologin_proxmox
-                    )
+                    from core.web_autologin import autologin_mikrotik, autologin_zabbix, autologin_proxmox
 
                     if host.manufacturer == "MikroTik":
                         autologin_mikrotik(url, host.web_username, web_password)
@@ -1744,490 +982,78 @@ class MainWindow(QMainWindow):
                         autologin_proxmox(url, host.web_username, web_password)
 
                     self._status_bar.showMessage(f"Auto-login concluído: {url}", 3000)
-                    logger.info(f"Auto-login completed for {url}")
                     return
 
                 except ImportError as e:
-                    logger.warning(f"Selenium not installed, falling back to webbrowser: {e}")
+                    logger.warning(f"Selenium not installed: {e}")
                     self._status_bar.showMessage("Selenium não instalado, abrindo navegador normal", 3000)
                 except Exception as e:
                     logger.error(f"Auto-login failed: {e}")
-                    QMessageBox.warning(
-                        self, "Aviso",
-                        f"Erro no auto-login, abrindo navegador normalmente:\n{e}"
-                    )
+                    QMessageBox.warning(self, "Aviso", f"Erro no auto-login:\n{e}")
 
-            # Fallback to regular browser
             webbrowser.open(url)
             self._status_bar.showMessage(f"Abrindo navegador: {url}", 3000)
-            logger.info(f"Opened browser for {url}")
 
         except Exception as e:
             logger.error(f"Failed to open browser: {e}")
             QMessageBox.critical(self, "Erro", f"Erro ao abrir navegador:\n{e}")
 
-    async def _connect_session_async(self, session: TabSession, config: SSHConfig) -> None:
-        """Async connection handler for a session."""
-        if not session.terminal:
-            return
-
-        self._quick_connect_btn.setEnabled(False)
-        session.connection_status = "connecting"
-        self._update_tab_status(session)
-        self._status_bar.showMessage(f"Conectando a {config.host}...")
-        self._status_bar.setStyleSheet("background-color: #ca5010; color: white;")
-
-        # Port knocking before SSH connection
-        if session.port_knocking:
-            await self._perform_port_knock(config.host, session.port_knocking)
-
-        try:
-            session.ssh_session = SSHSession(
-                config,
-                lambda data, s=session: self._on_ssh_output_for_session(s, data),
-                self._create_disconnect_callback_for_session(session)
-            )
-            await session.ssh_session.connect()
-
-            # Success - clear pending connection and save for reconnection
-            session.pending_connection = None
-            session.config = config
-            session.connection_status = "connected"
-            session.terminal.clear()
-            session.terminal.set_focus()
-
-            # Send terminal size after connection
-            cols, rows = session.terminal.get_terminal_size()
-            await session.ssh_session.resize_terminal(cols, rows)
-
-            self._create_agent_for_session(session)
-            self._update_tab_status(session)
-            self._restore_chat_for_session(session)
-            self._update_ui_state()
-
-        except asyncssh.PermissionDenied:
-            # Authentication failed - ask for password again
-            logger.warning(f"Authentication failed for {config.username}@{config.host}")
-            session.ssh_session = None
-            session.connection_status = "disconnected"
-            self._update_tab_status(session)
-
-            # Store connection data for retry (keep username)
-            cols, rows = session.terminal.get_terminal_size()
-            session.pending_connection = {
-                "host": config.host,
-                "port": config.port,
-                "username": config.username,  # Keep the username
-                "terminal_type": config.terminal_type,
-                "term_width": cols,
-                "term_height": rows,
-            }
-
-            # Show error and prompt for password again
-            session.terminal.append_output("Access denied\r\n")
-            session.terminal.start_prelogin(need_username=False, need_password=True)
-            self._update_ui_state()
-
-        except Exception as e:
-            logger.error(f"Connection failed: {e}")
-            session.ssh_session = None
-
-            # Check if we have fallback hosts to try
-            if session.fallback_hosts and session.current_host_index < len(session.fallback_hosts) - 1:
-                session.current_host_index += 1
-                next_ip = session.fallback_hosts[session.current_host_index]
-                self._status_bar.showMessage(f"Falha em {config.host}. Tentando {next_ip}...")
-                logger.info(f"Trying fallback IP: {next_ip}")
-
-                # Create new config with next IP
-                new_config = SSHConfig(
-                    host=next_ip,
-                    port=config.port,
-                    username=config.username,
-                    password=config.password,
-                    terminal_type=config.terminal_type,
-                    term_width=config.term_width,
-                    term_height=config.term_height,
-                )
-                # Retry with next IP
-                asyncio.ensure_future(self._connect_session_async(session, new_config))
-                return
-
-            # No more fallback hosts - show error
-            session.pending_connection = None
-            session.connection_status = "disconnected"
-            session.fallback_hosts = []  # Clear fallback list
-            session.current_host_index = 0
-            self._update_tab_status(session)
-            QMessageBox.critical(
-                self,
-                "Erro de Conexao",
-                f"Falha ao conectar em {config.host}:\n{str(e)}"
-            )
-            self._update_ui_state()
+    # === Dialog Handlers ===
 
     @Slot()
-    def _on_disconnect_clicked(self) -> None:
-        """Handle disconnect button click."""
-        session = self._get_active_session()
-        if session:
-            session.config = None  # Clear config on manual disconnect
+    def _on_config_clicked(self) -> None:
+        """Handle config button click."""
+        dialog = SettingsDialog(parent=self)
+        result = dialog.exec()
+        if result == QDialog.DialogCode.Accepted:
+            new_chat_pos = self._data_manager.get_chat_position()
+            new_sftp_pos = self._data_manager.get_sftp_position()
+            self._layout_manager.apply_settings_changes(new_chat_pos, new_sftp_pos)
+
+    def _on_about_clicked(self) -> None:
+        """Handle about button click."""
+        dialog = AboutDialog(parent=self)
+        dialog.exec()
+
+    @Slot()
+    def _on_quick_connect(self) -> None:
+        """Handle quick connect button click."""
+        session = self._session_manager.get_active_session()
+
+        if session and session.is_connected:
+            reply = QMessageBox.question(
+                self,
+                "Ja conectado",
+                "Deseja desconectar da sessao atual?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return
             asyncio.ensure_future(self._disconnect_session_async(session))
 
-    @Slot(str)
-    def _on_unexpected_disconnect(self, tab_id: str) -> None:
-        """Handle unexpected disconnection from SSH session."""
-        logger.info(f"Unexpected disconnect detected for tab {tab_id}")
+        dialog = QuickConnectDialog(parent=self)
+        if dialog.exec():
+            data = dialog.get_connection_data()
 
-        # Find session by ID
-        session = self._sessions.get(tab_id)
-        if not session:
-            return
-
-        # Clean up session state
-        if self._agent_task and not self._agent_task.done():
-            self._agent_task.cancel()
-        session.agent = None
-        session.ssh_session = None
-        session.connection_status = "disconnected"
-
-        # Clear any pending output buffer
-        self._output_timer.stop()
-        session.output_buffer.clear()
-
-        # Update tab status
-        self._update_tab_status(session)
-
-        # Clear SFTP browser if this is the active session
-        active_session = self._get_active_session()
-        if active_session and active_session.id == tab_id:
-            asyncio.ensure_future(self._sftp_browser.disconnect())
-            self._sftp_browser.clear()
-
-        # Show disconnected message in terminal
-        if session.terminal:
-            session.terminal.show_disconnected_message()
-        self._update_ui_state()
-
-    async def _disconnect_session_async(self, session: TabSession) -> None:
-        """Async disconnection handler for a session."""
-        if self._agent_task and not self._agent_task.done():
-            self._agent_task.cancel()
-            try:
-                await self._agent_task
-            except asyncio.CancelledError:
-                pass
-            self._agent_task = None
-
-        if session.agent:
-            await session.agent.close()
-            session.agent = None
-
-        if session.ssh_session:
-            await session.ssh_session.disconnect()
-            session.ssh_session = None
-
-        # Clear SFTP browser if this is the active session
-        active_session = self._get_active_session()
-        if active_session and active_session.id == session.id:
-            await self._sftp_browser.disconnect()
-            self._sftp_browser.clear()
-
-        session.connection_status = "disconnected"
-        self._update_tab_status(session)
-        self._update_ui_state()
-
-    def _on_ssh_output_for_session(self, session: TabSession, data: str) -> None:
-        """Handle output received from SSH session for a specific session."""
-        # Use signal for thread-safe communication
-        self._ssh_output_received.emit(session.id, data)
-
-    @Slot(str, str)
-    def _on_ssh_output_slot(self, tab_id: str, data: str) -> None:
-        """Buffer SSH output and process in batches."""
-        session = self._sessions.get(tab_id)
-        if not session or not session.terminal:
-            return
-
-        # Ignore output if terminal is in disconnected mode
-        if session.terminal._disconnected_mode:
-            return
-
-        session.output_buffer.append(data)
-        # Start timer if not already running (10ms batching window)
-        if not self._output_timer.isActive():
-            self._output_timer.start(10)
-
-    def _flush_output_buffer(self) -> None:
-        """Flush buffered output to all terminals."""
-        for session in self._sessions.values():
-            if not session.output_buffer or not session.terminal:
-                continue
-            # Don't flush if terminal is in disconnected mode
-            if session.terminal._disconnected_mode:
-                session.output_buffer.clear()
-                continue
-            # Combine all buffered data
-            combined = ''.join(session.output_buffer)
-            session.output_buffer.clear()
-            # Process combined data at once
-            if combined:
-                session.terminal.append_output(combined)
-
-    @Slot(str, bool)
-    def _on_chat_message(self, message: str, web_search: bool = False) -> None:
-        """Handle message from chat widget."""
-        session = self._get_active_session()
-        if not session or not session.agent or not session.ssh_session:
-            self._chat.add_message("Erro: Conecte-se a um host primeiro.", is_user=False)
-            return
-
-        self._chat.set_processing(True)
-        self._agent_task = asyncio.ensure_future(self._process_chat_message(session, message, web_search))
-
-    async def _process_chat_message(self, session: TabSession, message: str, web_search: bool = False) -> None:
-        """Process chat message with AI agent."""
-        try:
-            if session.agent:
-                response = await session.agent.chat(message, web_search=web_search)
-                self._chat.add_message(response, is_user=False)
-
-                # Update session chat state with current display messages
-                session.chat_state.display_messages = self._chat.get_display_messages()
-
-                # Save to persistent storage (only for saved hosts)
-                self._save_chat_to_conversation(session)
-
-                # Update account balance after response
-                await self._update_account_balance(session)
-
-        except asyncio.CancelledError:
-            self._chat.add_message("Operacao cancelada.", is_user=False)
-        except Exception as e:
-            logger.error(f"Agent error: {e}")
-            self._chat.add_message(f"Erro: {str(e)}", is_user=False)
-        finally:
-            self._chat.set_processing(False)
-
-    @Slot()
-    def _on_stop_agent(self) -> None:
-        """Handle stop button click in chat."""
-        session = self._get_active_session()
-        if session and session.agent:
-            session.agent.cancel()
-        if self._agent_task and not self._agent_task.done():
-            self._agent_task.cancel()
-
-    # === Chat conversation management ===
-
-    def _restore_chat_for_session(self, session: TabSession) -> None:
-        """Restore chat widget state for a session."""
-        # Clear current chat messages
-        self._chat.clear_messages()
-
-        # Load conversations for this host (if saved host)
-        if session.host_id:
-            convs = self._data_manager.get_conversations_for_host(session.host_id)
-            conv_list = [(c.id, c.title, c.updated_at) for c in convs]
-            self._chat.set_conversations(conv_list)
-            self._chat.set_current_conversation(session.chat_state.conversation_id)
-        else:
-            # Quick connect - no saved conversations
-            self._chat.set_conversations([])
-            self._chat.set_current_conversation(None)
-
-        # Restore display messages from session state
-        if session.chat_state.display_messages:
-            self._chat.restore_messages(session.chat_state.display_messages)
-
-        # Sync agent messages if continuing a conversation
-        if session.agent and session.chat_state.conversation_id:
-            conv = self._data_manager.get_conversation_by_id(session.chat_state.conversation_id)
-            if conv and conv.messages:
-                # Restore agent.messages from conversation
-                session.agent.messages = [
-                    {
-                        "role": m.role,
-                        "content": m.content,
-                        **({"tool_calls": m.tool_calls} if m.tool_calls else {}),
-                        **({"tool_call_id": m.tool_call_id} if m.tool_call_id else {})
-                    }
-                    for m in conv.messages
-                ]
-                # Restore usage stats
-                session.agent.usage_stats.prompt_tokens = conv.prompt_tokens
-                session.agent.usage_stats.completion_tokens = conv.completion_tokens
-                session.agent.usage_stats.total_tokens = conv.prompt_tokens + conv.completion_tokens
-                session.agent.usage_stats.total_cost = conv.total_cost
-                # Update cost display
-                self._chat.update_cost(
-                    conv.total_cost,
-                    conv.prompt_tokens,
-                    conv.completion_tokens
-                )
-        elif session.agent:
-            # No conversation, show current session stats if any
-            stats = session.agent.usage_stats
-            if stats.total_tokens > 0:
-                self._chat.update_cost(
-                    stats.total_cost,
-                    stats.prompt_tokens,
-                    stats.completion_tokens
-                )
-
-        # Fetch account balance when restoring session
-        if session.agent:
-            asyncio.ensure_future(self._update_account_balance(session))
-
-    async def _update_account_balance(self, session: TabSession) -> None:
-        """Fetch and update account balance display."""
-        if not session.agent:
-            return
-        try:
-            balance = await session.agent.get_account_balance()
-            self._chat.update_balance(balance)
-        except Exception as e:
-            logger.debug(f"Failed to update balance: {e}")
-
-    def _save_chat_to_conversation(self, session: TabSession) -> None:
-        """Save current chat to persistent conversation."""
-        # Only save for saved hosts (not quick connect)
-        if not session.host_id or not session.agent:
-            return
-
-        # Convert agent messages to ChatMessage objects
-        chat_messages = []
-        for msg in session.agent.messages:
-            chat_messages.append(ChatMessage(
-                role=msg.get("role", "user"),
-                content=msg.get("content", ""),
-                tool_calls=msg.get("tool_calls"),
-                tool_call_id=msg.get("tool_call_id")
-            ))
-
-        if not chat_messages:
-            return
-
-        # Get usage stats from agent
-        usage = session.agent.usage_stats
-        prompt_tokens = usage.prompt_tokens
-        completion_tokens = usage.completion_tokens
-        total_cost = usage.total_cost
-
-        if session.chat_state.conversation_id:
-            # Update existing conversation
-            self._data_manager.update_conversation(
-                session.chat_state.conversation_id,
-                chat_messages,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_cost=total_cost
-            )
-        else:
-            # Create new conversation
-            conv = self._data_manager.create_conversation(session.host_id)
-            session.chat_state.conversation_id = conv.id
-            self._data_manager.update_conversation(
-                conv.id,
-                chat_messages,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_cost=total_cost
+            self._initiate_connection_for_session(
+                session=session,
+                host=data["host"],
+                port=data["port"],
+                username=data["username"],
+                password=data["password"],
+                terminal_type=data["terminal_type"],
+                device_type=data.get("device_type"),
+                host_id=None
             )
 
-        # Refresh conversation list in UI
-        convs = self._data_manager.get_conversations_for_host(session.host_id)
-        conv_list = [(c.id, c.title, c.updated_at) for c in convs]
-        self._chat.set_conversations(conv_list)
-        self._chat.set_current_conversation(session.chat_state.conversation_id)
-
-    @Slot(str)
-    def _on_conversation_changed(self, conv_id: str) -> None:
-        """Handle conversation selection from dropdown."""
-        session = self._get_active_session()
-        if not session:
-            return
-
-        # Save current web search state before switching
-        session.chat_state.web_search_enabled = self._chat.is_web_search_enabled()
-
-        # Save current state first
-        if session.chat_state.conversation_id and session.agent:
-            self._save_chat_to_conversation(session)
-
-        # Clear chat
-        self._chat.clear_messages()
-
-        if conv_id:
-            # Load existing conversation
-            conv = self._data_manager.get_conversation_by_id(conv_id)
-            if conv:
-                session.chat_state.conversation_id = conv_id
-
-                # Restore display messages (only user and assistant with content)
-                display_msgs = []
-                for msg in conv.messages:
-                    if msg.role == "user":
-                        display_msgs.append((msg.content, True))
-                    elif msg.role == "assistant" and msg.content:
-                        display_msgs.append((msg.content, False))
-
-                session.chat_state.display_messages = display_msgs
-                self._chat.restore_messages(display_msgs)
-
-                # Restore agent messages
-                if session.agent:
-                    session.agent.messages = [
-                        {
-                            "role": m.role,
-                            "content": m.content,
-                            **({"tool_calls": m.tool_calls} if m.tool_calls else {}),
-                            **({"tool_call_id": m.tool_call_id} if m.tool_call_id else {})
-                        }
-                        for m in conv.messages
-                    ]
-                    # Restore usage stats from saved conversation
-                    session.agent.usage_stats.prompt_tokens = conv.prompt_tokens
-                    session.agent.usage_stats.completion_tokens = conv.completion_tokens
-                    session.agent.usage_stats.total_tokens = conv.prompt_tokens + conv.completion_tokens
-                    session.agent.usage_stats.total_cost = conv.total_cost
-
-                # Update cost display
-                self._chat.update_cost(
-                    conv.total_cost,
-                    conv.prompt_tokens,
-                    conv.completion_tokens
-                )
-
-                # Reset web search state (not persisted per conversation)
-                session.chat_state.web_search_enabled = False
-                self._chat.set_web_search_enabled(False)
-        else:
-            # New conversation
-            session.chat_state.clear()
-            self._chat.set_web_search_enabled(False)
-            if session.agent:
-                session.agent.reset()
-
     @Slot()
-    def _on_new_conversation(self) -> None:
-        """Handle new conversation request."""
-        session = self._get_active_session()
-        if not session:
-            return
+    def _on_add_host_clicked(self) -> None:
+        """Handle add host button click."""
+        dialog = HostDialog(self._data_manager, parent=self)
+        if dialog.exec():
+            self._refresh_hosts_list()
 
-        # Save current conversation first (if exists)
-        if session.chat_state.conversation_id and session.agent:
-            self._save_chat_to_conversation(session)
-
-        # Clear state
-        session.chat_state.clear()
-        self._chat.clear_messages()
-        self._chat.set_current_conversation(None)
-        self._chat.set_web_search_enabled(False)
-
-        if session.agent:
-            session.agent.reset()
+    # === Window Events ===
 
     def resizeEvent(self, event) -> None:
         """Handle window resize."""
@@ -2237,20 +1063,16 @@ class MainWindow(QMainWindow):
 
     @Slot()
     def _on_resize_timeout(self) -> None:
-        """Handle resize timeout - update active terminal size."""
-        session = self._get_active_session()
+        """Handle resize timeout."""
+        session = self._session_manager.get_active_session()
         if session and session.ssh_session and session.ssh_session.is_connected and session.terminal:
             cols, rows = session.terminal.get_terminal_size()
-            asyncio.ensure_future(
-                session.ssh_session.resize_terminal(cols, rows)
-            )
+            asyncio.ensure_future(session.ssh_session.resize_terminal(cols, rows))
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        """Handle window close - disconnect all sessions."""
-        # Check if any session is connected
-        connected_sessions = [s for s in self._sessions.values() if s.is_connected]
+        """Handle window close."""
+        connected_sessions = self._session_manager.get_connected_sessions()
         if connected_sessions:
-            # Disconnect all sessions
             async def disconnect_all():
                 for session in connected_sessions:
                     await self._disconnect_session_async(session)

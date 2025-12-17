@@ -1,19 +1,19 @@
 """
 Hosts view widget for displaying all hosts in card or list format.
+Refactored to use HostFilterManager for filter logic.
 """
 
 from typing import Optional
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QComboBox,
-    QPushButton, QScrollArea, QFrame, QGridLayout, QLabel,
-    QMenu, QSizePolicy
+    QPushButton, QScrollArea, QFrame, QGridLayout
 )
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QIcon
 
 from core.data_manager import DataManager, Host
-from gui.host_card import HostCard, HostListItem, AddHostCard, HostTableHeader, HostsTableWidget
+from gui.host_card import HostCard, AddHostCard, HostsTableWidget
 from gui.fields_config_dialog import FieldsConfigDialog
+from gui.hosts.host_filter_manager import HostFilterManager
 
 
 class FlowLayout(QGridLayout):
@@ -42,15 +42,12 @@ class HostsView(QWidget):
         self._view_mode = self._data_manager.get_hosts_view_mode()
         self._sort_by = self._data_manager.get_hosts_sort_by()
         self._search_text = ""
-        # Filter state for each category
-        self._selected_tags: list[str] = []
-        self._selected_manufacturers: list[str] = []
-        self._selected_functions: list[str] = []
-        self._selected_groups: list[str] = []
         self._host_widgets: list = []
-        self._list_items: list = []  # For column resize updates
-        self._table_header = None
         self._table_widget: Optional[HostsTableWidget] = None
+
+        # Filter manager
+        self._filter_manager = HostFilterManager(data_manager, self)
+        self._filter_manager.filters_changed.connect(self._on_filters_changed)
 
         self._setup_ui()
         self._apply_style()
@@ -134,7 +131,7 @@ class HostsView(QWidget):
         """)
         layout.addWidget(self._search_input)
 
-        # Filters button (replaces Tags button)
+        # Filters button
         self._filters_btn = QPushButton("Filtros")
         self._filters_btn.setStyleSheet("""
             QPushButton {
@@ -272,202 +269,21 @@ class HostsView(QWidget):
             }
         """)
 
-    def _get_menu_style(self) -> str:
-        """Get common menu stylesheet."""
-        return """
-            QMenu {
-                background-color: #3c3c3c;
-                border: 1px solid #555555;
-                border-radius: 4px;
-                padding: 4px;
-            }
-            QMenu::item {
-                padding: 6px 24px;
-                border-radius: 2px;
-                color: #dcdcdc;
-            }
-            QMenu::item:selected {
-                background-color: #094771;
-            }
-            QMenu::item:checked {
-                background-color: #0e639c;
-            }
-            QMenu::separator {
-                height: 1px;
-                background-color: #555555;
-                margin: 4px 8px;
-            }
-        """
-
     def _show_filters_menu(self):
-        """Show menu for filtering by multiple categories."""
-        menu = QMenu(self)
-        menu.setStyleSheet(self._get_menu_style())
+        """Show the filters menu using HostFilterManager."""
+        from gui.hosts_dialog import DEFAULT_MANUFACTURERS, DEFAULT_FUNCTIONS
 
-        # Clear all filters option
-        total_filters = (len(self._selected_tags) + len(self._selected_manufacturers) +
-                        len(self._selected_functions) + len(self._selected_groups))
-        if total_filters > 0:
-            clear_action = menu.addAction("✕ Limpar todos os filtros")
-            clear_action.triggered.connect(self._clear_all_filters)
-            menu.addSeparator()
-
-        # Tags submenu
-        tags_menu = menu.addMenu(f"Tags" + (f" ({len(self._selected_tags)})" if self._selected_tags else ""))
-        tags_menu.setStyleSheet(self._get_menu_style())
-        self._populate_filter_submenu(
-            tags_menu,
-            self._data_manager.get_tags(),
-            self._selected_tags,
-            self._toggle_tag_filter
+        menu = self._filter_manager.build_filters_menu(
+            self,
+            default_manufacturers=DEFAULT_MANUFACTURERS,
+            default_functions=DEFAULT_FUNCTIONS
         )
-
-        # Fabricantes submenu
-        manufacturers_menu = menu.addMenu(f"Fabricante" + (f" ({len(self._selected_manufacturers)})" if self._selected_manufacturers else ""))
-        manufacturers_menu.setStyleSheet(self._get_menu_style())
-        # Combine defaults with saved manufacturers
-        from gui.hosts_dialog import DEFAULT_MANUFACTURERS
-        all_manufacturers = list(DEFAULT_MANUFACTURERS)
-        for m in self._data_manager.get_manufacturers():
-            if m not in all_manufacturers:
-                all_manufacturers.append(m)
-        self._populate_filter_submenu(
-            manufacturers_menu,
-            all_manufacturers,
-            self._selected_manufacturers,
-            self._toggle_manufacturer_filter
-        )
-
-        # Funções submenu
-        functions_menu = menu.addMenu(f"Função" + (f" ({len(self._selected_functions)})" if self._selected_functions else ""))
-        functions_menu.setStyleSheet(self._get_menu_style())
-        # Combine defaults with saved functions
-        from gui.hosts_dialog import DEFAULT_FUNCTIONS
-        all_functions = list(DEFAULT_FUNCTIONS)
-        for f in self._data_manager.get_functions():
-            if f not in all_functions:
-                all_functions.append(f)
-        self._populate_filter_submenu(
-            functions_menu,
-            all_functions,
-            self._selected_functions,
-            self._toggle_function_filter
-        )
-
-        # Grupos submenu
-        groups_menu = menu.addMenu(f"Grupos" + (f" ({len(self._selected_groups)})" if self._selected_groups else ""))
-        groups_menu.setStyleSheet(self._get_menu_style())
-        self._populate_filter_submenu(
-            groups_menu,
-            self._data_manager.get_groups(),
-            self._selected_groups,
-            self._toggle_group_filter
-        )
-
         menu.exec(self._filters_btn.mapToGlobal(self._filters_btn.rect().bottomLeft()))
 
-    def _populate_filter_submenu(self, menu: QMenu, available: list, selected: list, toggle_fn):
-        """Populate a filter submenu with checkable items."""
-        if not available:
-            action = menu.addAction("Nenhum disponível")
-            action.setEnabled(False)
-            return
-
-        # Clear this category option
-        if selected:
-            clear_action = menu.addAction("✕ Limpar")
-            clear_action.triggered.connect(lambda: self._clear_category_filter(selected))
-            menu.addSeparator()
-
-        for item in available:
-            action = menu.addAction(item)
-            action.setCheckable(True)
-            action.setChecked(item in selected)
-            action.triggered.connect(lambda checked, i=item: toggle_fn(i, checked))
-
-    def _toggle_tag_filter(self, tag: str, checked: bool):
-        """Toggle a tag in the filter."""
-        if checked and tag not in self._selected_tags:
-            self._selected_tags.append(tag)
-        elif not checked and tag in self._selected_tags:
-            self._selected_tags.remove(tag)
-        self._update_filters_button()
+    def _on_filters_changed(self):
+        """Handle filter changes from the filter manager."""
+        self._filter_manager.update_button_style(self._filters_btn)
         self.refresh()
-
-    def _toggle_manufacturer_filter(self, manufacturer: str, checked: bool):
-        """Toggle a manufacturer in the filter."""
-        if checked and manufacturer not in self._selected_manufacturers:
-            self._selected_manufacturers.append(manufacturer)
-        elif not checked and manufacturer in self._selected_manufacturers:
-            self._selected_manufacturers.remove(manufacturer)
-        self._update_filters_button()
-        self.refresh()
-
-    def _toggle_function_filter(self, function: str, checked: bool):
-        """Toggle a function in the filter."""
-        if checked and function not in self._selected_functions:
-            self._selected_functions.append(function)
-        elif not checked and function in self._selected_functions:
-            self._selected_functions.remove(function)
-        self._update_filters_button()
-        self.refresh()
-
-    def _toggle_group_filter(self, group: str, checked: bool):
-        """Toggle a group in the filter."""
-        if checked and group not in self._selected_groups:
-            self._selected_groups.append(group)
-        elif not checked and group in self._selected_groups:
-            self._selected_groups.remove(group)
-        self._update_filters_button()
-        self.refresh()
-
-    def _clear_category_filter(self, selected_list: list):
-        """Clear a specific category filter."""
-        selected_list.clear()
-        self._update_filters_button()
-        self.refresh()
-
-    def _clear_all_filters(self):
-        """Clear all filters."""
-        self._selected_tags.clear()
-        self._selected_manufacturers.clear()
-        self._selected_functions.clear()
-        self._selected_groups.clear()
-        self._update_filters_button()
-        self.refresh()
-
-    def _update_filters_button(self):
-        """Update filters button text to show filter count."""
-        total = (len(self._selected_tags) + len(self._selected_manufacturers) +
-                len(self._selected_functions) + len(self._selected_groups))
-        if total > 0:
-            self._filters_btn.setText(f"Filtros ({total})")
-            self._filters_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #0e639c;
-                    border: 1px solid #007acc;
-                    border-radius: 4px;
-                    padding: 8px 16px;
-                    color: white;
-                }
-                QPushButton:hover {
-                    background-color: #1177bb;
-                }
-            """)
-        else:
-            self._filters_btn.setText("Filtros")
-            self._filters_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #3c3c3c;
-                    border: 1px solid #555555;
-                    border-radius: 4px;
-                    padding: 8px 16px;
-                    color: #dcdcdc;
-                }
-                QPushButton:hover {
-                    background-color: #4c4c4c;
-                }
-            """)
 
     def _on_search_changed(self, text: str):
         """Handle search text change."""
@@ -496,60 +312,9 @@ class HostsView(QWidget):
 
     def _on_column_resized(self, field: str, width: int):
         """Handle column resize from table widget."""
-        # Save to settings
         self._data_manager.set_list_column_width(field, width)
 
-    def _filter_hosts(self, hosts: list[Host]) -> list[Host]:
-        """Filter hosts based on search text and selected filters."""
-        filtered = []
-
-        for host in hosts:
-            # Search filter - includes all host fields except password and terminal_type
-            if self._search_text:
-                searchable_parts = [
-                    host.id,
-                    host.name,
-                    host.host,
-                    str(host.port),
-                    host.username,
-                    host.device_type or '',
-                    host.manufacturer or '',
-                    host.os_version or '',
-                    ' '.join(host.tags),
-                    ' '.join(host.functions),
-                    ' '.join(host.groups),
-                    host.notes or '',
-                    host.created_at or '',
-                ]
-                searchable = ' '.join(searchable_parts).lower()
-                if self._search_text not in searchable:
-                    continue
-
-            # Tag filter (AND logic - host must have ALL selected tags)
-            if self._selected_tags:
-                if not all(tag in host.tags for tag in self._selected_tags):
-                    continue
-
-            # Manufacturer filter (OR logic - host must have ANY selected manufacturer)
-            if self._selected_manufacturers:
-                if not host.manufacturer or host.manufacturer not in self._selected_manufacturers:
-                    continue
-
-            # Function filter (AND logic - host must have ALL selected functions)
-            if self._selected_functions:
-                if not all(func in host.functions for func in self._selected_functions):
-                    continue
-
-            # Group filter (AND logic - host must have ALL selected groups)
-            if self._selected_groups:
-                if not all(group in host.groups for group in self._selected_groups):
-                    continue
-
-            filtered.append(host)
-
-        return filtered
-
-    def _sort_hosts(self, hosts: list[Host]) -> list[Host]:
+    def _sort_hosts(self, hosts: list) -> list:
         """Sort hosts based on current sort setting."""
         if self._sort_by == "name":
             return sorted(hosts, key=lambda h: h.name.lower())
@@ -580,9 +345,9 @@ class HostsView(QWidget):
             if item.widget():
                 item.widget().deleteLater()
 
-        # Get filtered and sorted hosts
+        # Get hosts and apply filters
         hosts = self._data_manager.get_hosts()
-        hosts = self._filter_hosts(hosts)
+        hosts = self._filter_manager.apply_filters(hosts, self._search_text)
         hosts = self._sort_hosts(hosts)
 
         if self._view_mode == "cards":
@@ -590,15 +355,14 @@ class HostsView(QWidget):
         else:
             self._display_as_list(hosts)
 
-    def _display_as_cards(self, hosts: list[Host]):
+    def _display_as_cards(self, hosts: list):
         """Display hosts as cards in a grid."""
-        # Get visible fields for cards
         visible_fields = self._data_manager.get_card_visible_fields()
 
         # Calculate columns based on width
         cols = max(1, (self.width() - 32) // 240)
         if cols < 1:
-            cols = 3  # Default
+            cols = 3
 
         row = 0
         col = 0
@@ -627,9 +391,8 @@ class HostsView(QWidget):
         # Add stretch at the end
         self._hosts_layout.setRowStretch(row + 1, 1)
 
-    def _display_as_list(self, hosts: list[Host]):
+    def _display_as_list(self, hosts: list):
         """Display hosts as a table using QTableWidget."""
-        # Get visible fields and custom widths for list view
         visible_fields = self._data_manager.get_list_visible_fields()
         column_widths = self._data_manager.get_list_column_widths()
 
@@ -638,7 +401,7 @@ class HostsView(QWidget):
         self._hosts_layout.setContentsMargins(0, 0, 0, 0)
         self._hosts_layout.setColumnStretch(0, 1)
 
-        # Create table widget with native QHeaderView resizing
+        # Create table widget
         self._table_widget = HostsTableWidget(
             visible_fields=visible_fields,
             column_widths=column_widths

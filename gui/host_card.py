@@ -1,5 +1,6 @@
 """
 Host card widget for displaying a host in card or list format.
+Refactored to use mixins for shared functionality.
 """
 
 from typing import List, Optional
@@ -11,6 +12,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QMouseEvent
 
 from core.data_manager import Host
+from gui.hosts.host_mixins import HostFieldMixin, HostMenuMixin
 
 
 # Field display names
@@ -58,7 +60,7 @@ class TagLabel(QLabel):
         """)
 
 
-class HostCard(QFrame):
+class HostCard(QFrame, HostFieldMixin, HostMenuMixin):
     """Card widget for displaying a host."""
 
     connect_requested = Signal(str, str)  # host_id, ip (empty for fallback)
@@ -74,32 +76,6 @@ class HostCard(QFrame):
         self._setup_ui()
         self._apply_style()
 
-    def _get_field_value(self, field: str) -> str:
-        """Get display value for a field."""
-        if field == "name":
-            return self._host.name
-        elif field == "host":
-            extra_ips = len(self._host.hosts) - 1 if self._host.hosts else 0
-            text = f"{self._host.host}:{self._host.port}"
-            if extra_ips > 0:
-                text += f" (+{extra_ips})"
-            return text
-        elif field == "port":
-            return str(self._host.port)
-        elif field == "username":
-            return self._host.username or "-"
-        elif field == "device_type":
-            return self._host.device_type or ""
-        elif field == "manufacturer":
-            return self._host.manufacturer or ""
-        elif field == "os_version":
-            return self._host.os_version or ""
-        elif field == "functions":
-            return ", ".join(self._host.functions) if self._host.functions else ""
-        elif field == "groups":
-            return ", ".join(self._host.groups) if self._host.groups else ""
-        return ""
-
     def _setup_ui(self):
         self.setFixedSize(220, 140)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -112,20 +88,17 @@ class HostCard(QFrame):
 
         for field in self._visible_fields:
             if field == "name":
-                # Host name - always bold and prominent
                 name_label = QLabel(self._host.name)
                 name_label.setStyleSheet("font-size: 14px; font-weight: bold; color: #ffffff;")
                 name_label.setWordWrap(True)
                 layout.addWidget(name_label)
 
             elif field == "host":
-                # Host address with port
-                address_label = QLabel(self._get_field_value("host"))
+                address_label = QLabel(self._get_field_value("host_with_port"))
                 address_label.setStyleSheet("font-size: 12px; color: #888888;")
                 layout.addWidget(address_label)
 
             elif field == "tags":
-                # Tags as colored badges
                 if self._host.tags:
                     tags_layout = QHBoxLayout()
                     tags_layout.setContentsMargins(0, 4, 0, 0)
@@ -144,9 +117,8 @@ class HostCard(QFrame):
                     layout.addLayout(tags_layout)
 
             elif field in ("device_type", "manufacturer", "os_version", "port", "username", "functions", "groups"):
-                # Other fields as simple text
                 value = self._get_field_value(field)
-                if value:
+                if value and value != "-":
                     field_label = QLabel(value)
                     field_label.setStyleSheet("font-size: 11px; color: #666666;")
                     layout.addWidget(field_label)
@@ -166,68 +138,13 @@ class HostCard(QFrame):
             }
         """)
 
-    def _get_menu_style(self) -> str:
-        """Get common menu stylesheet."""
-        return """
-            QMenu {
-                background-color: #3c3c3c;
-                border: 1px solid #555555;
-                border-radius: 4px;
-                padding: 4px;
-            }
-            QMenu::item {
-                padding: 6px 24px;
-                border-radius: 2px;
-                color: #dcdcdc;
-            }
-            QMenu::item:selected {
-                background-color: #094771;
-            }
-        """
-
-    def _create_ip_submenu(self, parent_menu: QMenu, action_name: str, signal) -> None:
-        """Create a submenu with IP options or simple action if only one IP."""
-        hosts = self._host.hosts if self._host.hosts else []
-
-        if len(hosts) <= 1:
-            # Single IP - simple action
-            action = parent_menu.addAction(action_name)
-            action.triggered.connect(lambda: signal.emit(self._host.id, ""))
-        else:
-            # Multiple IPs - create submenu
-            submenu = parent_menu.addMenu(action_name)
-            submenu.setStyleSheet(self._get_menu_style())
-
-            for ip in hosts:
-                ip_action = submenu.addAction(ip)
-                ip_action.triggered.connect(lambda checked, addr=ip: signal.emit(self._host.id, addr))
-
     def _show_context_menu(self, pos):
-        menu = QMenu(self)
-        menu.setStyleSheet(self._get_menu_style())
-
-        # SSH/Connect with IP submenu
-        self._create_ip_submenu(menu, "Acesso SSH", self.connect_requested)
-
-        # Winbox with IP submenu
-        self._create_ip_submenu(menu, "Winbox", self.winbox_requested)
-
-        # Web access with IP submenu
-        self._create_ip_submenu(menu, "Acesso Web", self.web_access_requested)
-
-        menu.addSeparator()
-
-        edit_action = menu.addAction("Editar")
-        edit_action.triggered.connect(lambda: self.edit_requested.emit(self._host.id))
-
-        delete_action = menu.addAction("Excluir")
-        delete_action.triggered.connect(lambda: self.delete_requested.emit(self._host.id))
-
+        menu = self._build_context_menu(self)
         menu.exec(self.mapToGlobal(pos))
 
     def mouseDoubleClickEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.connect_requested.emit(self._host.id, "")  # Empty = use fallback
+            self.connect_requested.emit(self._host.id, "")
         super().mouseDoubleClickEvent(event)
 
     @property
@@ -235,7 +152,7 @@ class HostCard(QFrame):
         return self._host
 
 
-class HostListItem(QFrame):
+class HostListItem(QFrame, HostFieldMixin, HostMenuMixin):
     """List item widget for displaying a host in list/table view."""
 
     connect_requested = Signal(str, str)  # host_id, ip (empty for fallback)
@@ -250,35 +167,9 @@ class HostListItem(QFrame):
         self._host = host
         self._visible_fields = visible_fields or ["name", "host", "port", "username", "tags", "device_type", "manufacturer"]
         self._column_widths = column_widths or {}
-        self._field_widgets: dict = {}  # field_id -> widget
+        self._field_widgets: dict = {}
         self._setup_ui()
         self._apply_style()
-
-    def _get_field_value(self, field: str) -> str:
-        """Get display value for a field."""
-        if field == "name":
-            return self._host.name
-        elif field == "host":
-            extra_ips = len(self._host.hosts) - 1 if self._host.hosts else 0
-            text = self._host.host
-            if extra_ips > 0:
-                text += f" (+{extra_ips})"
-            return text
-        elif field == "port":
-            return str(self._host.port)
-        elif field == "username":
-            return self._host.username or "-"
-        elif field == "device_type":
-            return self._host.device_type or "-"
-        elif field == "manufacturer":
-            return self._host.manufacturer or "-"
-        elif field == "os_version":
-            return self._host.os_version or "-"
-        elif field == "functions":
-            return ", ".join(self._host.functions) if self._host.functions else "-"
-        elif field == "groups":
-            return ", ".join(self._host.groups) if self._host.groups else "-"
-        return "-"
 
     def _get_effective_width(self, field: str) -> int:
         """Get effective width for a field (custom or default)."""
@@ -311,7 +202,6 @@ class HostListItem(QFrame):
             width = self._get_effective_width(field)
 
             if field == "name":
-                # Name column - stretch
                 name_label = QLabel(self._host.name)
                 name_label.setStyleSheet("font-size: 12px; font-weight: bold; color: #ffffff; padding-left: 12px;")
                 if width == 0:
@@ -323,7 +213,6 @@ class HostListItem(QFrame):
                 self._field_widgets[field] = name_label
 
             elif field == "tags":
-                # Tags as colored badges
                 tags_container = QWidget()
                 tags_container.setFixedWidth(width)
                 tags_layout = QHBoxLayout(tags_container)
@@ -345,7 +234,6 @@ class HostListItem(QFrame):
                 self._field_widgets[field] = tags_container
 
             else:
-                # Other fields as simple text with fixed width
                 value = self._get_field_value(field)
                 field_label = QLabel(value)
                 field_label.setStyleSheet("font-size: 11px; color: #888888; padding-left: 4px;")
@@ -373,68 +261,13 @@ class HostListItem(QFrame):
             }
         """)
 
-    def _get_menu_style(self) -> str:
-        """Get common menu stylesheet."""
-        return """
-            QMenu {
-                background-color: #3c3c3c;
-                border: 1px solid #555555;
-                border-radius: 4px;
-                padding: 4px;
-            }
-            QMenu::item {
-                padding: 6px 24px;
-                border-radius: 2px;
-                color: #dcdcdc;
-            }
-            QMenu::item:selected {
-                background-color: #094771;
-            }
-        """
-
-    def _create_ip_submenu(self, parent_menu: QMenu, action_name: str, signal) -> None:
-        """Create a submenu with IP options or simple action if only one IP."""
-        hosts = self._host.hosts if self._host.hosts else []
-
-        if len(hosts) <= 1:
-            # Single IP - simple action
-            action = parent_menu.addAction(action_name)
-            action.triggered.connect(lambda: signal.emit(self._host.id, ""))
-        else:
-            # Multiple IPs - create submenu
-            submenu = parent_menu.addMenu(action_name)
-            submenu.setStyleSheet(self._get_menu_style())
-
-            for ip in hosts:
-                ip_action = submenu.addAction(ip)
-                ip_action.triggered.connect(lambda checked, addr=ip: signal.emit(self._host.id, addr))
-
     def _show_context_menu(self, pos):
-        menu = QMenu(self)
-        menu.setStyleSheet(self._get_menu_style())
-
-        # SSH/Connect with IP submenu
-        self._create_ip_submenu(menu, "Acesso SSH", self.connect_requested)
-
-        # Winbox with IP submenu
-        self._create_ip_submenu(menu, "Winbox", self.winbox_requested)
-
-        # Web access with IP submenu
-        self._create_ip_submenu(menu, "Acesso Web", self.web_access_requested)
-
-        menu.addSeparator()
-
-        edit_action = menu.addAction("Editar")
-        edit_action.triggered.connect(lambda: self.edit_requested.emit(self._host.id))
-
-        delete_action = menu.addAction("Excluir")
-        delete_action.triggered.connect(lambda: self.delete_requested.emit(self._host.id))
-
+        menu = self._build_context_menu(self)
         menu.exec(self.mapToGlobal(pos))
 
     def mouseDoubleClickEvent(self, event: QMouseEvent):
         if event.button() == Qt.MouseButton.LeftButton:
-            self.connect_requested.emit(self._host.id, "")  # Empty = use fallback
+            self.connect_requested.emit(self._host.id, "")
         super().mouseDoubleClickEvent(event)
 
     @property
@@ -447,7 +280,7 @@ class HostTableHeader(QFrame):
 
     column_resized = Signal(str, int)  # field_id, new_width
 
-    RESIZE_MARGIN = 6  # Pixels from edge to trigger resize cursor
+    RESIZE_MARGIN = 6
     MIN_COLUMN_WIDTH = 40
 
     def __init__(self, visible_fields: Optional[List[str]] = None,
@@ -497,7 +330,6 @@ class HostTableHeader(QFrame):
             if field == "name":
                 header_label.setStyleSheet("font-size: 11px; font-weight: bold; color: #888888; padding-left: 12px;")
                 if width == 0:
-                    # Name column stretches
                     header_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
                     header_label.setMinimumWidth(100)
                 else:
@@ -521,13 +353,11 @@ class HostTableHeader(QFrame):
         """)
 
     def _get_field_at_x(self, x: int) -> Optional[tuple]:
-        """Get field and edge info at x position. Returns (field_id, is_right_edge, label_index)."""
+        """Get field and edge info at x position."""
         for i, label in enumerate(self._header_labels):
             label_rect = label.geometry()
-            # Check if near right edge of this label
             if abs(x - label_rect.right()) <= self.RESIZE_MARGIN:
                 field = self._visible_fields[i]
-                # Don't allow resizing the last column or "name" if it's stretch
                 if i < len(self._header_labels) - 1:
                     return (field, True, i)
         return None
@@ -536,20 +366,16 @@ class HostTableHeader(QFrame):
         x = event.position().x()
 
         if self._resizing:
-            # Calculate new width
             delta = x - self._resize_start_x
             new_width = max(self.MIN_COLUMN_WIDTH, self._resize_start_width + int(delta))
 
-            # Update label width
             for i, label in enumerate(self._header_labels):
                 if self._visible_fields[i] == self._resize_field:
                     label.setFixedWidth(new_width)
                     break
 
-            # Emit signal for live update
             self.column_resized.emit(self._resize_field, new_width)
         else:
-            # Check if over resize edge
             edge_info = self._get_field_at_x(int(x))
             if edge_info:
                 self.setCursor(Qt.CursorShape.SplitHCursor)
@@ -576,7 +402,6 @@ class HostTableHeader(QFrame):
             self._resizing = False
             self.releaseMouse()
             self.setCursor(Qt.CursorShape.ArrowCursor)
-            # Final emit
             if self._resize_field:
                 for label in self._header_labels:
                     if label.property("field_id") == self._resize_field:
@@ -602,13 +427,11 @@ class AddHostCard(QFrame):
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
-        # Plus icon
         plus_label = QLabel("+")
         plus_label.setStyleSheet("font-size: 32px; color: #888888;")
         plus_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(plus_label)
 
-        # Text
         text_label = QLabel("Adicionar Host")
         text_label.setStyleSheet("font-size: 12px; color: #888888;")
         text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -633,7 +456,7 @@ class AddHostCard(QFrame):
         super().mousePressEvent(event)
 
 
-class HostsTableWidget(QTableWidget):
+class HostsTableWidget(QTableWidget, HostFieldMixin, HostMenuMixin):
     """Table widget for displaying hosts with native column resizing."""
 
     connect_requested = Signal(str, str)  # host_id, ip (empty for fallback)
@@ -649,12 +472,12 @@ class HostsTableWidget(QTableWidget):
         self._visible_fields = visible_fields or ["name", "host", "port", "username", "tags", "device_type", "manufacturer"]
         self._column_widths = column_widths or {}
         self._hosts: List[Host] = []
+        self._host = None  # For mixin compatibility
         self._setup_ui()
         self._apply_style()
 
     def _setup_ui(self):
         """Setup the table UI."""
-        # Configure table
         self.setColumnCount(len(self._visible_fields))
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -666,22 +489,18 @@ class HostsTableWidget(QTableWidget):
         self.customContextMenuRequested.connect(self._show_context_menu)
         self.doubleClicked.connect(self._on_double_click)
 
-        # Setup header
         header = self.horizontalHeader()
         header.setStretchLastSection(False)
         header.setSectionsMovable(False)
         header.setHighlightSections(False)
         header.sectionResized.connect(self._on_section_resized)
 
-        # Set header labels
         labels = [FIELD_LABELS.get(f, f.title()) for f in self._visible_fields]
         self.setHorizontalHeaderLabels(labels)
 
-        # Set column widths and resize modes
         for i, field in enumerate(self._visible_fields):
             width = self._column_widths.get(field, FIELD_WIDTHS.get(field, 100))
             if field == "name" and width == 0:
-                # Name column stretches
                 header.setSectionResizeMode(i, QHeaderView.ResizeMode.Stretch)
             else:
                 header.setSectionResizeMode(i, QHeaderView.ResizeMode.Interactive)
@@ -690,7 +509,6 @@ class HostsTableWidget(QTableWidget):
                 else:
                     self.setColumnWidth(i, 100)
 
-        # Set minimum section size for resizing
         header.setMinimumSectionSize(40)
 
     def _apply_style(self):
@@ -754,24 +572,21 @@ class HostsTableWidget(QTableWidget):
         for row, host in enumerate(hosts):
             self._populate_row(row, host)
 
-        # Set row height
         self.verticalHeader().setDefaultSectionSize(40)
 
     def _populate_row(self, row: int, host: Host):
         """Populate a row with host data."""
         for col, field in enumerate(self._visible_fields):
-            value = self._get_field_value(host, field)
+            value = self._get_field_value(field, host)
             item = QTableWidgetItem(value)
             item.setData(Qt.ItemDataRole.UserRole, host.id)
 
-            # Style based on field
             if field == "name":
                 font = item.font()
                 font.setBold(True)
                 item.setFont(font)
                 item.setForeground(Qt.GlobalColor.white)
             elif field == "tags":
-                # Tags as comma-separated text (simplified from badges)
                 item.setText(", ".join(host.tags) if host.tags else "-")
                 item.setForeground(Qt.GlobalColor.cyan)
             else:
@@ -779,73 +594,11 @@ class HostsTableWidget(QTableWidget):
 
             self.setItem(row, col, item)
 
-    def _get_field_value(self, host: Host, field: str) -> str:
-        """Get display value for a field."""
-        if field == "name":
-            return host.name
-        elif field == "host":
-            extra_ips = len(host.hosts) - 1 if host.hosts else 0
-            text = host.host
-            if extra_ips > 0:
-                text += f" (+{extra_ips})"
-            return text
-        elif field == "port":
-            return str(host.port)
-        elif field == "username":
-            return host.username or "-"
-        elif field == "device_type":
-            return host.device_type or "-"
-        elif field == "manufacturer":
-            return host.manufacturer or "-"
-        elif field == "os_version":
-            return host.os_version or "-"
-        elif field == "functions":
-            return ", ".join(host.functions) if host.functions else "-"
-        elif field == "groups":
-            return ", ".join(host.groups) if host.groups else "-"
-        elif field == "tags":
-            return ", ".join(host.tags) if host.tags else "-"
-        return "-"
-
     def _get_host_at_row(self, row: int) -> Optional[Host]:
         """Get host at the given row."""
         if 0 <= row < len(self._hosts):
             return self._hosts[row]
         return None
-
-    def _get_menu_style(self) -> str:
-        """Get common menu stylesheet."""
-        return """
-            QMenu {
-                background-color: #3c3c3c;
-                border: 1px solid #555555;
-                border-radius: 4px;
-                padding: 4px;
-            }
-            QMenu::item {
-                padding: 6px 24px;
-                border-radius: 2px;
-                color: #dcdcdc;
-            }
-            QMenu::item:selected {
-                background-color: #094771;
-            }
-        """
-
-    def _create_ip_submenu(self, parent_menu: QMenu, action_name: str, signal, host: Host) -> None:
-        """Create a submenu with IP options or simple action if only one IP."""
-        hosts = host.hosts if host.hosts else []
-
-        if len(hosts) <= 1:
-            action = parent_menu.addAction(action_name)
-            action.triggered.connect(lambda: signal.emit(host.id, ""))
-        else:
-            submenu = parent_menu.addMenu(action_name)
-            submenu.setStyleSheet(self._get_menu_style())
-
-            for ip in hosts:
-                ip_action = submenu.addAction(ip)
-                ip_action.triggered.connect(lambda checked, addr=ip: signal.emit(host.id, addr))
 
     def _show_context_menu(self, pos):
         """Show context menu for host actions."""
@@ -858,21 +611,8 @@ class HostsTableWidget(QTableWidget):
         if not host:
             return
 
-        menu = QMenu(self)
-        menu.setStyleSheet(self._get_menu_style())
-
-        self._create_ip_submenu(menu, "Acesso SSH", self.connect_requested, host)
-        self._create_ip_submenu(menu, "Winbox", self.winbox_requested, host)
-        self._create_ip_submenu(menu, "Acesso Web", self.web_access_requested, host)
-
-        menu.addSeparator()
-
-        edit_action = menu.addAction("Editar")
-        edit_action.triggered.connect(lambda: self.edit_requested.emit(host.id))
-
-        delete_action = menu.addAction("Excluir")
-        delete_action.triggered.connect(lambda: self.delete_requested.emit(host.id))
-
+        self._host = host  # Set for mixin compatibility
+        menu = self._build_context_menu(self, host)
         menu.exec(self.viewport().mapToGlobal(pos))
 
     def _on_double_click(self, index):
